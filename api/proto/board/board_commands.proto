@@ -242,6 +242,39 @@ message NetsResponse
   repeated kiapi.board.types.Net nets = 1;
 }
 
+// A net's own color, the one set in the Nets tab of the Appearance panel (not its net class's)
+message NetColor
+{
+  string net = 1;
+
+  // Absent: the net has no color of its own
+  kiapi.common.types.Color color = 2;
+}
+
+// Returns NetColorsResponse with every net that has a color of its own
+message GetNetColors
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+}
+
+message NetColorsResponse
+{
+  repeated NetColor colors = 1;
+}
+
+// Sets nets' own colors, which are kept in the project file.  Each net must be on the board.
+// A NetColor with no color takes the net's own color off.
+// In MMM_MERGE mode, nets not in the request keep their colors; in MMM_REPLACE mode, they lose them.
+// Returns NetColorsResponse with every net that has a color of its own after the change
+message SetNetColors
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  kiapi.common.types.MapMergeMode merge_mode = 2;
+
+  repeated NetColor colors = 3;
+}
+
 // Retrieve all the copper items belonging to a certain net or set of nets
 // returns kiapi.common.commands.GetItemsResponse
 message GetItemsByNet

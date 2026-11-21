@@ -45,6 +45,8 @@
 #include <netinfo.h>
 #include <pad.h>
 #include <pcb_draw_panel_gal.h>
+#include <pcb_painter.h>
+#include <project/net_settings.h>
 #include <pcb_edit_frame.h>
 #include <pcb_group.h>
 #include <pcb_reference_image.h>
@@ -151,6 +153,8 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<SetBoardLayerName, BoardLayerNameResponse>( &API_HANDLER_PCB::handleSetBoardLayerName );
 
     registerHandler<GetNets, NetsResponse>( &API_HANDLER_PCB::handleGetNets );
+    registerHandler<GetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleGetNetColors );
+    registerHandler<SetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleSetNetColors );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
     registerHandler<GetItemsByNet, GetItemsResponse>( &API_HANDLER_PCB::handleGetItemsByNet );
     registerHandler<GetItemsByNetClass, GetItemsResponse>( &API_HANDLER_PCB::handleGetItemsByNetClass );
@@ -1660,6 +1664,133 @@ HANDLER_RESULT<NetsResponse> API_HANDLER_PCB::handleGetNets( const HANDLER_CONTE
     }
 
     return response;
+}
+
+
+std::map<wxString, KIGFX::COLOR4D> API_HANDLER_PCB::netColors() const
+{
+    std::map<wxString, KIGFX::COLOR4D> colors;
+    BOARD*                             board = this->board();
+
+    // While the editor is open its render settings hold the colors, and saving writes them
+    // over the project's
+    if( frame() )
+    {
+        KIGFX::RENDER_SETTINGS* rs = frame()->GetCanvas()->GetView()->GetPainter()->GetSettings();
+
+        for( const auto& [code, color] : static_cast<KIGFX::PCB_RENDER_SETTINGS*>( rs )->GetNetColorMap() )
+        {
+            if( NETINFO_ITEM* net = board->GetNetInfo().GetNetItem( code ); net && color != KIGFX::COLOR4D::UNSPECIFIED )
+                colors[net->GetNetname()] = color;
+        }
+    }
+    else if( board->GetProject() )
+    {
+        for( const auto& [name, color] : board->GetProject()->GetProjectFile().NetSettings()->GetNetColorAssignments() )
+        {
+            if( color != KIGFX::COLOR4D::UNSPECIFIED )
+                colors[name] = color;
+        }
+    }
+
+    return colors;
+}
+
+
+static NetColorsResponse packNetColors( const std::map<wxString, KIGFX::COLOR4D>& aColors )
+{
+    NetColorsResponse response;
+
+    for( const auto& [name, color] : aColors )
+    {
+        NetColor* entry = response.add_colors();
+        entry->set_net( name.ToUTF8() );
+        kiapi::common::PackColor( *entry->mutable_color(), color );
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<NetColorsResponse> API_HANDLER_PCB::handleGetNetColors(
+        const HANDLER_CONTEXT<GetNetColors>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    return packNetColors( netColors() );
+}
+
+
+HANDLER_RESULT<NetColorsResponse> API_HANDLER_PCB::handleSetNetColors(
+        const HANDLER_CONTEXT<SetNetColors>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    BOARD* board = this->board();
+
+    if( !board->GetProject() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "the board has no project to keep net colors in" );
+        return tl::unexpected( e );
+    }
+
+    for( const NetColor& entry : aCtx.Request.colors() )
+    {
+        if( !board->GetNetInfo().GetNetItem( wxString::FromUTF8( entry.net() ) ) )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( fmt::format( "there is no net '{}' on the board", entry.net() ) );
+            return tl::unexpected( e );
+        }
+    }
+
+    std::map<wxString, KIGFX::COLOR4D> colors = netColors();
+
+    if( aCtx.Request.merge_mode() == types::MapMergeMode::MMM_REPLACE )
+        colors.clear();
+
+    for( const NetColor& entry : aCtx.Request.colors() )
+    {
+        wxString name = wxString::FromUTF8( entry.net() );
+
+        if( entry.has_color() )
+            colors[name] = kiapi::common::UnpackColor( entry.color() );
+        else
+            colors.erase( name );
+    }
+
+    std::shared_ptr<NET_SETTINGS>& netSettings = board->GetProject()->GetProjectFile().NetSettings();
+    netSettings->ClearNetColorAssignments();
+
+    for( const auto& [name, color] : colors )
+        netSettings->SetNetColorAssignment( name, color );
+
+    if( frame() )
+    {
+        KIGFX::RENDER_SETTINGS* rs = frame()->GetCanvas()->GetView()->GetPainter()->GetSettings();
+        std::map<int, KIGFX::COLOR4D>& map = static_cast<KIGFX::PCB_RENDER_SETTINGS*>( rs )->GetNetColorMap();
+        map.clear();
+
+        for( const auto& [name, color] : colors )
+            map[board->GetNetInfo().GetNetItem( name )->GetNetCode()] = color;
+
+        frame()->GetCanvas()->GetView()->UpdateAllLayersColor();
+        frame()->GetCanvas()->RedrawRatsnest();
+        frame()->GetCanvas()->Refresh();
+        frame()->GetAppearancePanel()->OnBoardNetSettingsChanged( *board );
+    }
+
+    onModified();
+
+    return packNetColors( colors );
 }
 
 

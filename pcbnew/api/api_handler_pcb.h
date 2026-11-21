@@ -31,6 +31,8 @@
 #include <api/common/commands/variant_commands.pb.h>
 #include <api/common/commands/library_commands.pb.h>
 #include <properties/property_mgr.h>
+#include <gal/color4d.h>
+#include <map>
 
 using namespace kiapi::board::jobs;
 
@@ -115,6 +117,13 @@ private:
             const HANDLER_CONTEXT<SetBoardLayerName>& aCtx );
 
     HANDLER_RESULT<NetsResponse> handleGetNets( const HANDLER_CONTEXT<GetNets>& aCtx );
+
+    HANDLER_RESULT<NetColorsResponse> handleGetNetColors( const HANDLER_CONTEXT<GetNetColors>& aCtx );
+
+    HANDLER_RESULT<NetColorsResponse> handleSetNetColors( const HANDLER_CONTEXT<SetNetColors>& aCtx );
+
+    /// Each net's own color: the editor's while it is open, else the project's
+    std::map<wxString, KIGFX::COLOR4D> netColors() const;
 
     HANDLER_RESULT<commands::GetItemsResponse> handleGetConnectedItems(
             const HANDLER_CONTEXT<GetConnectedItems>& aCtx );
