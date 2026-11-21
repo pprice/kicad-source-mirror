@@ -42,10 +42,36 @@
 #include <sys/file.h>
 #endif
 
+#ifdef __WINDOWS__
+#include <wx/msw/wrapwin.h>
+#endif
+
 using kiapi::common::ApiRequest, kiapi::common::ApiResponse, kiapi::common::ApiStatusCode;
 
 
 wxString KICAD_API_SERVER::s_logFileName = "api.log";
+
+
+/**
+ * Return true if another server already listens at \a aSocket.
+ *
+ * On Windows the ipc transport is a named pipe, "\\.\pipe\" followed by the socket path, so
+ * the path never exists as a file and the pipe itself has to be asked for.
+ */
+static bool socketInUse( const wxFileName& aSocket )
+{
+#ifdef __WINDOWS__
+    wxString pipe = wxS( "\\\\.\\pipe\\" ) + aSocket.GetFullPath();
+
+    if( WaitNamedPipeW( pipe.wc_str(), 1 ) )
+        return true;
+
+    // A pipe that exists but has no free instance times out; only a missing one is free
+    return GetLastError() != ERROR_FILE_NOT_FOUND;
+#else
+    return aSocket.Exists();
+#endif
+}
 
 
 wxDEFINE_EVENT( API_REQUEST_EVENT, KICAD_API_REQUEST_EVENT );
@@ -144,11 +170,11 @@ void KICAD_API_SERVER::Start()
     }
 #endif
 
-    if( socket.Exists() )
+    if( socketInUse( socket ) )
     {
         socket.SetFullName( wxString::Format( wxS( "api-%lu.sock" ), ::wxGetProcessId() ) );
 
-        if( socket.Exists() )
+        if( socketInUse( socket ) )
         {
             wxLogTrace( traceApi, wxString::Format( "Server: PID socket path %s already exists!",
                                                     socket.GetFullPath() ) );
