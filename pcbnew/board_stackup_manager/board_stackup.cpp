@@ -579,7 +579,6 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
 
 bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
 {
-    // Read-only for now
     kiapi::board::BoardStackup stackup;
 
     if( !aContainer.UnpackTo( &stackup ) )
@@ -591,8 +590,137 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
 
 bool BOARD_STACKUP::Deserialize( const kiapi::board::BoardStackup& aInput )
 {
-    // Read-only for now
-    return false;
+    using namespace kiapi::board;
+
+    // This updates the stackup in place: the message must list the layers this stackup already
+    // has, in the same order (as Serialize gives them).  Adding or removing layers changes what
+    // the board can hold, which is not done here.  Nothing is changed unless the layers match.
+    if( aInput.layers_size() != GetCount() )
+        return false;
+
+    for( int i = 0; i < GetCount(); ++i )
+    {
+        const BoardStackupLayer&  layer = aInput.layers( i );
+        const BOARD_STACKUP_ITEM* item = m_list[i];
+
+        if( layer.type() != ToProtoEnum<BOARD_STACKUP_ITEM_TYPE, BoardStackupLayerType>( item->GetType() ) )
+            return false;
+
+        if( item->GetType() == BS_ITEM_TYPE_DIELECTRIC )
+        {
+            if( layer.dielectric().layer_size() < 1 )
+                return false;
+        }
+        else if( layer.layer() != ToProtoEnum<PCB_LAYER_ID, types::BoardLayer>( item->GetBrdLayerId() ) )
+        {
+            return false;
+        }
+    }
+
+    for( int i = 0; i < GetCount(); ++i )
+    {
+        const BoardStackupLayer& layer = aInput.layers( i );
+        BOARD_STACKUP_ITEM*      item = m_list[i];
+
+        if( item->IsColorEditable() && layer.has_color() )
+        {
+            KIGFX::COLOR4D color = kiapi::common::UnpackColor( layer.color() );
+            wxString       current = item->GetColor( 0 );
+
+            // Keep a named color ("Green") when it is the one asked for
+            if( !IsPrmSpecified( current ) || KIGFX::COLOR4D( current ) != color )
+                item->SetColor( color.ToHexString() );
+        }
+
+        switch( item->GetType() )
+        {
+        case BS_ITEM_TYPE_COPPER:
+            if( layer.has_thickness() )
+                item->SetThickness( layer.thickness().value_nm() );
+
+            break;
+
+        case BS_ITEM_TYPE_DIELECTRIC:
+        {
+            const BoardStackupDielectricLayer& dielectric = layer.dielectric();
+
+            if( dielectric.type() == BoardStackupDielectricType::BSDT_CORE )
+                item->SetTypeName( KEY_CORE );
+            else if( dielectric.type() == BoardStackupDielectricType::BSDT_PREPREG )
+                item->SetTypeName( KEY_PREPREG );
+
+            while( item->GetSublayersCount() < dielectric.layer_size() )
+                item->AddDielectricPrms( item->GetSublayersCount() );
+
+            while( item->GetSublayersCount() > dielectric.layer_size() )
+                item->RemoveDielectricPrms( item->GetSublayersCount() - 1 );
+
+            for( int j = 0; j < dielectric.layer_size(); ++j )
+            {
+                const BoardStackupDielectricProperties& props = dielectric.layer( j );
+
+                item->SetEpsilonR( props.epsilon_r(), j );
+                item->SetLossTangent( props.loss_tangent(), j );
+                item->SetThickness( props.thickness().value_nm(), j );
+                item->SetThicknessLocked( props.thickness_locked(), j );
+                item->SetSpecFreq( props.has_spec_frequency() ? props.spec_frequency() : 0.0, j );
+
+                if( !props.material_name().empty() )
+                    item->SetMaterial( wxString::FromUTF8( props.material_name() ), j );
+
+                if( props.dielectric_model() != DielectricModel::DM_UNKNOWN )
+                {
+                    item->SetDielectricModel( FromProtoEnum<DIELECTRIC_MODEL>( props.dielectric_model() ),
+                                              j );
+                }
+            }
+
+            break;
+        }
+
+        case BS_ITEM_TYPE_SOLDERMASK:
+        {
+            const BoardStackupSoldermaskLayer& soldermask = layer.soldermask();
+
+            item->SetEpsilonR( soldermask.epsilon_r() );
+            item->SetLossTangent( soldermask.loss_tangent() );
+            item->SetThickness( soldermask.thickness().value_nm() );
+
+            if( !soldermask.material_name().empty() )
+                item->SetMaterial( wxString::FromUTF8( soldermask.material_name() ) );
+
+            break;
+        }
+
+        case BS_ITEM_TYPE_SILKSCREEN:
+            if( !layer.silkscreen().material_name().empty() )
+                item->SetMaterial( wxString::FromUTF8( layer.silkscreen().material_name() ) );
+
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    if( aInput.has_finish() )
+        m_FinishType = wxString::FromUTF8( aInput.finish().type_name() );
+
+    if( aInput.has_impedance() )
+        m_HasDielectricConstrains = aInput.impedance().is_controlled();
+
+    if( aInput.has_edge() )
+    {
+        if( aInput.edge().connector().type() != BoardEdgeConnectorType::BECT_UNKNOWN )
+        {
+            m_EdgeConnectorConstraints =
+                    FromProtoEnum<BS_EDGE_CONNECTOR_CONSTRAINTS>( aInput.edge().connector().type() );
+        }
+
+        m_EdgePlating = aInput.edge().plating().has_edge_plating();
+    }
+
+    return true;
 }
 
 

@@ -47,8 +47,11 @@ message BoardStackupResponse
   kiapi.board.BoardStackup stackup = 1;
 }
 
-// Changes the stackup for the given board according to the contents of the message (**not yet implemented**)
-// WARNING: any existing content on layers that are removed by this call is deleted.  This operation cannot be undone.
+// Changes the stackup for the given board according to the contents of the message.
+// The stackup must list the layers the board's stackup already has, in the order GetBoardStackup
+// gives them; their thicknesses, materials, colors and dielectric sublayers may change.  To add or
+// remove copper layers, use SetBoardEnabledLayers first.  A copper or technical layer's non-empty
+// user_name renames it.  This operation cannot be undone.
 // Returns BoardStackupResponse with the updated stackup, in normalized form
 message UpdateBoardStackup
 {

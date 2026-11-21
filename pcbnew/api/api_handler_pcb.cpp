@@ -136,6 +136,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<GetItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetItems );
 
     registerHandler<SetBoardEnabledLayers, BoardEnabledLayersResponse>( &API_HANDLER_PCB::handleSetBoardEnabledLayers );
+    registerHandler<UpdateBoardStackup, BoardStackupResponse>( &API_HANDLER_PCB::handleUpdateBoardStackup );
     registerHandler<GetBoardDesignRules, BoardDesignRulesResponse>( &API_HANDLER_PCB::handleGetBoardDesignRules );
     registerHandler<SetBoardDesignRules, BoardDesignRulesResponse>( &API_HANDLER_PCB::handleSetBoardDesignRules );
     registerHandler<GetCustomDesignRules, CustomRulesResponse>( &API_HANDLER_PCB::handleGetCustomDesignRules );
@@ -689,6 +690,73 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
 
     response.set_copper_layer_count( copperLayerCount );
     board::PackLayerSet( *response.mutable_layers(), enabled );
+
+    return response;
+}
+
+
+HANDLER_RESULT<BoardStackupResponse> API_HANDLER_PCB::handleUpdateBoardStackup(
+        const HANDLER_CONTEXT<UpdateBoardStackup>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    BOARD*        board = this->board();
+    BOARD_STACKUP stackup = board->GetStackupOrDefault();
+
+    if( !stackup.Deserialize( aCtx.Request.stackup() ) )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "the stackup must list the board's stackup layers in the order "
+                             "GetBoardStackup gives them; use SetBoardEnabledLayers to add or "
+                             "remove copper layers" );
+        return tl::unexpected( e );
+    }
+
+    using kiapi::board::BoardStackupLayer, kiapi::board::BoardStackupLayerType;
+
+    for( const BoardStackupLayer& layer : aCtx.Request.stackup().layers() )
+    {
+        if( layer.type() == BoardStackupLayerType::BSLT_DIELECTRIC || layer.user_name().empty() )
+            continue;
+
+        if( layer.user_name().find( '"' ) != std::string::npos )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( "layer names may not contain a double quote" );
+            return tl::unexpected( e );
+        }
+    }
+
+    BOARD_DESIGN_SETTINGS& settings = board->GetDesignSettings();
+
+    settings.GetStackupDescriptor() = stackup;
+    settings.m_HasStackup = true;
+    settings.SetBoardThickness( stackup.BuildBoardThicknessFromStackup() );
+
+    for( const BoardStackupLayer& layer : aCtx.Request.stackup().layers() )
+    {
+        if( layer.type() == BoardStackupLayerType::BSLT_DIELECTRIC || layer.user_name().empty() )
+            continue;
+
+        PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
+        wxString     name = wxString::FromUTF8( layer.user_name() );
+
+        if( board->GetLayerName( id ) != name )
+            board->SetLayerName( id, name );
+    }
+
+    // Backdrill stub length comes from layer distances, so a drill chart is stale now
+    board->BumpDrillModelGeneration();
+    onModified();
+
+    BoardStackupResponse response;
+    board::PackBoardStackup( *board, *response.mutable_stackup() );
 
     return response;
 }
