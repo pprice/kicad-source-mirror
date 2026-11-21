@@ -211,6 +211,18 @@ message GetBoardLayerByName
   string name = 2;
 }
 
+// Gives an enabled board layer the name shown in the KiCad GUI.  An empty name restores the
+// standard one ("In1.Cu").  Names may not contain a double quote.
+// Returns BoardLayerNameResponse with the layer's name after the change
+message SetBoardLayerName
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  kiapi.board.types.BoardLayer layer = 2;
+
+  string name = 3;
+}
+
 /*
  * Net management
  */

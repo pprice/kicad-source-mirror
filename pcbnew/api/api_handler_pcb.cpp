@@ -148,6 +148,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<SetBoardOrigin, Empty>( &API_HANDLER_PCB::handleSetBoardOrigin );
     registerHandler<GetBoardLayerName, BoardLayerNameResponse>( &API_HANDLER_PCB::handleGetBoardLayerName );
     registerHandler<GetBoardLayerByName, BoardLayerResponse>( &API_HANDLER_PCB::handleGetBoardLayerByName );
+    registerHandler<SetBoardLayerName, BoardLayerNameResponse>( &API_HANDLER_PCB::handleSetBoardLayerName );
 
     registerHandler<GetNets, NetsResponse>( &API_HANDLER_PCB::handleGetNets );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
@@ -1490,6 +1491,50 @@ HANDLER_RESULT<BoardLayerResponse> API_HANDLER_PCB::handleGetBoardLayerByName(
 
     PCB_LAYER_ID id = board()->GetLayerID( wxString::FromUTF8( aCtx.Request.name() ) );
     response.set_layer( ToProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( id ) );
+
+    return response;
+}
+
+
+HANDLER_RESULT<BoardLayerNameResponse> API_HANDLER_PCB::handleSetBoardLayerName(
+            const HANDLER_CONTEXT<SetBoardLayerName>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+        !documentValidation )
+    {
+        return tl::unexpected( documentValidation.error() );
+    }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID>( aCtx.Request.layer() );
+
+    if( !IsValidLayer( id ) || !board()->IsLayerEnabled( id ) )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "the layer must be one the board has enabled" );
+        return tl::unexpected( e );
+    }
+
+    wxString name = wxString::FromUTF8( aCtx.Request.name() );
+
+    if( board()->GetLayerName( id ) != name )
+    {
+        if( !board()->SetLayerName( id, name ) )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( "layer names may not contain a double quote" );
+            return tl::unexpected( e );
+        }
+
+        onModified();
+    }
+
+    BoardLayerNameResponse response;
+    response.set_name( board()->GetLayerName( id ).ToUTF8() );
 
     return response;
 }

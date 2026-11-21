@@ -111,6 +111,9 @@ private:
     HANDLER_RESULT<BoardLayerResponse> handleGetBoardLayerByName(
             const HANDLER_CONTEXT<GetBoardLayerByName>& aCtx );
 
+    HANDLER_RESULT<BoardLayerNameResponse> handleSetBoardLayerName(
+            const HANDLER_CONTEXT<SetBoardLayerName>& aCtx );
+
     HANDLER_RESULT<NetsResponse> handleGetNets( const HANDLER_CONTEXT<GetNets>& aCtx );
 
     HANDLER_RESULT<commands::GetItemsResponse> handleGetConnectedItems(
