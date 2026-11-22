@@ -412,6 +412,36 @@ message RouteDiffPair
   kiapi.common.types.Distance gap = 14;
 }
 
+// Drags a track, arc or via with KiCad's router, as dragging in the editor does (D, or G for free
+// angle): the tracks joined to it follow, bending at 45 degrees, and other nets' copper is walked
+// round or shoved aside as the mode says.  In the editor it is one undo step ("Drag Track").
+// Returns RouteTrackResponse: the tracks laid in place of the dragged ones, those moved, those
+// taken off.  Nothing changes unless the item can go where it is asked.
+message DragTrack
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  // A track, arc or via
+  kiapi.common.types.KIID item = 2;
+
+  // Where the item is taken hold of.  On a track, within half its width of an end takes that
+  // corner; anywhere else moves the whole track sideways, its neighbours bending to follow.
+  // Absent: a track's or arc's middle, a via's centre
+  kiapi.common.types.Vector2 grab = 3;
+
+  // Where the point taken hold of goes
+  kiapi.common.types.Vector2 to = 4;
+
+  // Move a corner to any angle (the editor's G); a track taken hold of away from its ends gives
+  // up its nearer corner
+  bool free_angle = 5;
+
+  RouteMode mode = 6;
+
+  // Work the drag out and return it without making it
+  bool dry_run = 7;
+}
+
 message RouteTrackResponse
 {
   // The route reached its end and was laid (or, in a dry run, would be)

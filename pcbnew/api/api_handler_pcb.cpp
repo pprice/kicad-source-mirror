@@ -109,6 +109,7 @@
 #include <drc/drc_rule_parser.h>
 #include <widgets/appearance_controls.h>
 #include <widgets/wx_infobar.h>
+#include <router/pns_drag_algo.h>
 #include <router/pns_kicad_iface.h>
 #include <router/pns_line.h>
 #include <router/pns_node.h>
@@ -167,6 +168,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<GetClearances, ClearancesResponse>( &API_HANDLER_PCB::handleGetClearances );
     registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
     registerHandler<RouteDiffPair, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteDiffPair );
+    registerHandler<DragTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleDragTrack );
     registerHandler<GetEditorState, EditorStateResponse>( &API_HANDLER_PCB::handleGetEditorState );
     registerHandler<TakeControl, EditorStateResponse>( &API_HANDLER_PCB::handleTakeControl );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
@@ -1878,6 +1880,166 @@ public:
     std::vector<KIID>        m_removed;
 };
 
+
+/**
+ * Readies a board for a router made for one request.  Headless, the board's rules engine has not
+ * been set up, and the router reads its clearances there.
+ * @return why it could not, or nothing
+ */
+std::optional<std::string> prepareForRouter( BOARD* aBoard, bool aHeadless )
+{
+    BOARD_DESIGN_SETTINGS& bds = aBoard->GetDesignSettings();
+
+    if( aHeadless )
+    {
+        if( !bds.m_DRCEngine )
+            bds.m_DRCEngine = std::make_shared<DRC_ENGINE>( aBoard, &bds );
+
+        try
+        {
+            bds.m_DRCEngine->InitEngine( aBoard->GetDesignRulesPath() );
+        }
+        catch( PARSE_ERROR& e )
+        {
+            return fmt::format( "the custom rules do not compile: {}", e.What().ToStdString() );
+        }
+    }
+
+    for( ZONE* zone : aBoard->Zones() )
+        zone->CacheBoundingBox();
+
+    for( FOOTPRINT* footprint : aBoard->Footprints() )
+    {
+        for( ZONE* zone : footprint->Zones() )
+            zone->CacheBoundingBox();
+
+        footprint->BuildCourtyardCaches();
+    }
+
+    return std::nullopt;
+}
+
+
+void setRouterMode( PNS::ROUTING_SETTINGS& aSettings, RouteMode aMode )
+{
+    switch( aMode )
+    {
+    case RouteMode::RTM_SHOVE:  aSettings.SetMode( PNS::RM_Shove );          break;
+    case RouteMode::RTM_STRICT: aSettings.SetMode( PNS::RM_MarkObstacles );  break;
+    default:                    aSettings.SetMode( PNS::RM_Walkaround );     break;
+    }
+
+    aSettings.SetAllowDRCViolations( false );
+}
+
+
+/// Says what an item of the router's comes too near, by reference and pad where it is a pad
+wxString describeClash( PNS::ROUTER& aRouter, const PNS::ITEM* aLaid, const PNS::OBSTACLE& aObstacle,
+                        bool aPair )
+{
+    BOARD_ITEM* hit = aObstacle.m_item->Parent();
+    wxString    what = hit ? hit->GetFriendlyName()
+                           : wxString( wxS( "a " ) ) + wxString( aObstacle.m_item->KindStr() );
+
+    if( !hit && aObstacle.m_item->ParentPadVia() )
+        hit = aObstacle.m_item->ParentPadVia()->Parent();
+
+    if( hit && hit->Type() == PCB_VIA_T )
+        what = wxS( "a via" );
+    else if( hit && hit->Type() == PCB_TRACE_T )
+        what = wxS( "a track" );
+    else if( hit && hit->Type() == PCB_ARC_T )
+        what = wxS( "an arc" );
+
+    if( hit && hit->Type() == PCB_PAD_T )
+    {
+        PAD* pad = static_cast<PAD*>( hit );
+        what = wxString::Format( wxS( "%s pad %s" ), pad->GetParentFootprint()->GetReference(),
+                                 pad->GetNumber() );
+    }
+
+    if( BOARD_CONNECTED_ITEM* connected = dynamic_cast<BOARD_CONNECTED_ITEM*>( hit ) )
+        what << wxS( " on " ) << connected->GetNetname();
+
+    wxString why = wxString::Format( wxS( "it would come too near %s" ), what );
+
+    // The other line's own pad: the pair is wider than the pins it meets, or its lines swap
+    // sides between its ends
+    if( aPair && aObstacle.m_item->Net() == aRouter.GetRuleResolver()->DpCoupledNet( aLaid->Net() ) )
+    {
+        why << wxS( ", the pair's other line: the pair is wider than the pins it meets there, "
+                    "or its lines swap sides between its ends" );
+    }
+
+    return why;
+}
+
+
+/**
+ * Checks all a router laid or moved against everything else it knows.  The router keeps clear of
+ * other nets' copper as it goes, but not a pair's lines of each other's pads (a pair that arrives
+ * crossed shorts there), so nothing is kept until this passes.
+ * @return what the first item that fails comes too near, or nothing
+ */
+std::optional<wxString> checkLaid( PNS::ROUTER& aRouter, const API_ROUTER_IFACE& aIface, bool aPair )
+{
+    std::vector<BOARD_ITEM*> laidItems = aIface.m_added;
+    laidItems.insert( laidItems.end(), aIface.m_modified.begin(), aIface.m_modified.end() );
+
+    for( BOARD_ITEM* item : laidItems )
+    {
+        PNS::ITEM* laid = aRouter.GetWorld()->FindItemByParent( item );
+
+        if( !laid )
+            continue;
+
+        if( auto obstacle = aRouter.GetWorld()->CheckColliding( laid ) )
+            return describeClash( aRouter, laid, *obstacle, aPair );
+    }
+
+    return std::nullopt;
+}
+
+
+/**
+ * Says what a drag that will not fix comes too near.  Where the router marks obstacles rather than
+ * walking round them (strict, or free angle) it shows the drag through them and then will not fix it.
+ */
+std::optional<wxString> dragClash( PNS::ROUTER& aRouter )
+{
+    PNS::DRAG_ALGO* dragger = aRouter.GetDragger();
+
+    if( !dragger || !dragger->CurrentNode() )
+        return std::nullopt;
+
+    PNS::ITEM_SET traces = dragger->Traces();
+
+    for( PNS::ITEM* item : traces.Items() )
+    {
+        if( auto obstacle = dragger->CurrentNode()->CheckColliding( item ) )
+            return describeClash( aRouter, item, *obstacle, false );
+    }
+
+    return std::nullopt;
+}
+
+
+/// Puts what a router laid, moved and took off into the answer
+void reportLaid( RouteTrackResponse& aResponse, const API_ROUTER_IFACE& aIface )
+{
+    for( BOARD_ITEM* item : aIface.m_added )
+        item->Serialize( *aResponse.add_added() );
+
+    for( BOARD_ITEM* item : aIface.m_modified )
+    {
+        if( std::find( aIface.m_added.begin(), aIface.m_added.end(), item ) == aIface.m_added.end() )
+            item->Serialize( *aResponse.add_modified() );
+    }
+
+    for( const KIID& id : aIface.m_removed )
+        aResponse.add_removed()->set_value( id.AsStdString() );
+}
+
 } // namespace
 
 
@@ -1913,8 +2075,7 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::routeWithRouter( const REQUE
                 return tl::unexpected( e );
             };
 
-    BOARD*                 board = this->board();
-    BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
+    BOARD* board = this->board();
 
     // An item a route can start or end on, and the point on it
     auto anchor =
@@ -2017,42 +2178,11 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::routeWithRouter( const REQUE
     else
         endPos = *lastWaypoint;
 
-    // Headless, the board's rules engine has not been set up; the router reads its clearances there
-    if( !frame() )
-    {
-        if( !bds.m_DRCEngine )
-            bds.m_DRCEngine = std::make_shared<DRC_ENGINE>( board, &bds );
-
-        try
-        {
-            bds.m_DRCEngine->InitEngine( board->GetDesignRulesPath() );
-        }
-        catch( PARSE_ERROR& e )
-        {
-            return badRequest( fmt::format( "the custom rules do not compile: {}",
-                                            e.What().ToStdString() ) );
-        }
-    }
-
-    for( ZONE* zone : board->Zones() )
-        zone->CacheBoundingBox();
-
-    for( FOOTPRINT* footprint : board->Footprints() )
-    {
-        for( ZONE* zone : footprint->Zones() )
-            zone->CacheBoundingBox();
-
-        footprint->BuildCourtyardCaches();
-    }
+    if( std::optional<std::string> why = prepareForRouter( board, !frame() ) )
+        return badRequest( *why );
 
     PNS::ROUTING_SETTINGS settings( nullptr, "" );
-
-    switch( req.mode() )
-    {
-    case RouteMode::RTM_SHOVE:  settings.SetMode( PNS::RM_Shove );          break;
-    case RouteMode::RTM_STRICT: settings.SetMode( PNS::RM_MarkObstacles );  break;
-    default:                    settings.SetMode( PNS::RM_Walkaround );     break;
-    }
+    setRouterMode( settings, req.mode() );
 
     switch( req.corners() )
     {
@@ -2061,8 +2191,6 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::routeWithRouter( const REQUE
     case RouteCorners::RTC_90_ROUNDED: settings.SetCornerMode( DIRECTION_45::ROUNDED_90 ); break;
     default:                           settings.SetCornerMode( DIRECTION_45::MITERED_45 ); break;
     }
-
-    settings.SetAllowDRCViolations( false );
 
     RouteTrackResponse            response;
     std::unique_ptr<BOARD_COMMIT> commit( static_cast<BOARD_COMMIT*>( createCommit().release() ) );
@@ -2317,63 +2445,14 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::routeWithRouter( const REQUE
                 if( !iface.m_committed )
                     response.set_failure( "the router laid nothing" );
 
-                // The router keeps clear of other nets' copper as it goes, but not a pair's two
-                // lines of each other's pads: a pair that arrives crossed shorts there.  So all
-                // that was laid is checked before any of it is kept.
-                for( BOARD_ITEM* item : iface.m_added )
+                if( std::optional<wxString> clash = checkLaid( router, iface, aPair ) )
                 {
-                    PNS::ITEM* laid = router.GetWorld()->FindItemByParent( item );
-
-                    if( !laid )
-                        continue;
-
-                    auto obstacle = router.GetWorld()->CheckColliding( laid );
-
-                    if( !obstacle )
-                        continue;
-
-                    BOARD_ITEM* hit = obstacle->m_item->Parent();
-                    wxString    what = hit ? hit->GetFriendlyName() : wxString( wxS( "a keep-out" ) );
-
-                    if( hit && hit->Type() == PCB_PAD_T )
-                    {
-                        PAD* pad = static_cast<PAD*>( hit );
-                        what = wxString::Format( wxS( "%s pad %s" ),
-                                                 pad->GetParentFootprint()->GetReference(),
-                                                 pad->GetNumber() );
-                    }
-
-                    if( BOARD_CONNECTED_ITEM* connected = dynamic_cast<BOARD_CONNECTED_ITEM*>( hit ) )
-                        what << wxS( " on " ) << connected->GetNetname();
-
-                    wxString why = wxString::Format( wxS( "the route would come too near %s" ), what );
-
-                    // The other line's own pad: the pair is wider than the pins it meets, or its
-                    // lines swap sides between its ends
-                    if( aPair && obstacle->m_item->Net() == router.GetRuleResolver()->DpCoupledNet( laid->Net() ) )
-                    {
-                        why << wxS( ", the pair's other line: the pair is wider than the pins it meets "
-                                    "there, or its lines swap sides between its ends" );
-                    }
-
                     response.set_completed( false );
-                    response.set_failure( why.ToUTF8() );
-                    break;
+                    response.set_failure( ( wxS( "the route is not kept: " ) + *clash ).ToUTF8() );
                 }
 
                 PackVector2( *response.mutable_reached(), endPos );
-
-                for( BOARD_ITEM* item : iface.m_added )
-                    item->Serialize( *response.add_added() );
-
-                for( BOARD_ITEM* item : iface.m_modified )
-                {
-                    if( std::find( iface.m_added.begin(), iface.m_added.end(), item ) == iface.m_added.end() )
-                        item->Serialize( *response.add_modified() );
-                }
-
-                for( const KIID& id : iface.m_removed )
-                    response.add_removed()->set_value( id.AsStdString() );
+                reportLaid( response, iface );
             }
 
             commit = iface.TakeCommit();
@@ -2383,6 +2462,170 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::routeWithRouter( const REQUE
     if( response.completed() && !req.dry_run() )
     {
         commit->Push( aPair ? _( "Route Differential Pair" ) : _( "Route Track" ) );
+        onModified();
+    }
+    else
+    {
+        commit->Revert();
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleDragTrack(
+        const HANDLER_CONTEXT<DragTrack>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    const DragTrack& req = aCtx.Request;
+
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( req.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    auto badRequest =
+            []( const std::string& aMessage ) -> tl::unexpected<ApiResponseStatus>
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( aMessage );
+                return tl::unexpected( e );
+            };
+
+    BOARD* board = this->board();
+
+    if( !req.has_item() || !req.has_to() )
+        return badRequest( "item and to are required" );
+
+    std::optional<BOARD_ITEM*> found = getItemById( KIID( req.item().value() ) );
+
+    if( !found )
+        return badRequest( fmt::format( "no item {} on the board", req.item().value() ) );
+
+    BOARD_ITEM* item = *found;
+    VECTOR2I    grab;
+
+    switch( item->Type() )
+    {
+    case PCB_TRACE_T:
+    {
+        PCB_TRACK* track = static_cast<PCB_TRACK*>( item );
+        grab = ( track->GetStart() + track->GetEnd() ) / 2;
+        break;
+    }
+
+    case PCB_ARC_T:  grab = static_cast<PCB_ARC*>( item )->GetMid(); break;
+    case PCB_VIA_T:  grab = item->GetPosition();                     break;
+
+    default:
+        return badRequest( fmt::format( "{} is not a track, arc or via", req.item().value() ) );
+    }
+
+    if( item->IsLocked() )
+        return badRequest( "the item is locked" );
+
+    if( req.has_grab() )
+        grab = UnpackVector2( req.grab() );
+
+    const VECTOR2I to = UnpackVector2( req.to() );
+
+    if( std::optional<std::string> why = prepareForRouter( board, !frame() ) )
+        return badRequest( *why );
+
+    PNS::ROUTING_SETTINGS settings( nullptr, "" );
+    setRouterMode( settings, req.mode() );
+
+    RouteTrackResponse            response;
+    std::unique_ptr<BOARD_COMMIT> commit( static_cast<BOARD_COMMIT*>( createCommit().release() ) );
+
+    {
+        API_ROUTER_IFACE iface( std::move( commit ) );
+        PNS::ROUTER      router;
+
+        iface.SetBoard( board );
+        router.SetInterface( &iface );
+        router.ClearWorld();
+        router.SyncWorld();
+        router.LoadSettings( &settings );
+
+        PNS::ITEM* dragged = router.GetWorld()->FindItemByParent( item );
+
+        if( !dragged )
+            return badRequest( "the router does not know the item" );
+
+        auto fail =
+                [&]( const wxString& aWhy, const VECTOR2I& aReached )
+                {
+                    response.set_completed( false );
+
+                    wxString why = aWhy;
+
+                    if( !router.FailureReason().IsEmpty() )
+                        why << wxS( ": " ) << router.FailureReason();
+
+                    response.set_failure( why.ToUTF8() );
+                    PackVector2( *response.mutable_reached(), aReached );
+                    router.StopRouting();
+                };
+
+        int dragMode = PNS::DM_ANY | ( req.free_angle() ? PNS::DM_FREE_ANGLE : 0 );
+
+        if( !router.StartDragging( grab, dragged, dragMode ) )
+        {
+            fail( wxS( "the router could not take hold of it there" ), grab );
+        }
+        else
+        {
+            // Led along in small steps, as a hand drags; the last step that fitted is where it
+            // got to if the drag stops short
+            const VECTOR2I d = to - grab;
+            const int      step = pcbIUScale.mmToIU( 0.2 );
+            const int      count = std::max( 1, KiROUND( d.EuclideanNorm() / step ) );
+            VECTOR2I       lastFit = grab;
+
+            for( int i = 1; i < count; ++i )
+            {
+                VECTOR2I p = grab + d * i / count;
+
+                if( router.Move( p, nullptr ) )
+                    lastFit = p;
+            }
+
+            if( !router.Move( to, nullptr ) )
+            {
+                fail( wxS( "it cannot go there" ), lastFit );
+            }
+            else if( !router.FixRoute( to, nullptr, false, false ) )
+            {
+                std::optional<wxString> clash = dragClash( router );
+                fail( clash ? *clash : wxString( wxS( "it could not be fixed there" ) ), lastFit );
+            }
+            else
+            {
+                router.StopRouting();
+                response.set_completed( iface.m_committed );
+
+                if( !iface.m_committed )
+                    response.set_failure( "the router moved nothing" );
+
+                if( std::optional<wxString> clash = checkLaid( router, iface, false ) )
+                {
+                    response.set_completed( false );
+                    response.set_failure( ( wxS( "the drag is not kept: " ) + *clash ).ToUTF8() );
+                }
+
+                PackVector2( *response.mutable_reached(), to );
+                reportLaid( response, iface );
+            }
+        }
+
+        commit = iface.TakeCommit();
+    }
+
+    if( response.completed() && !req.dry_run() )
+    {
+        commit->Push( _( "Drag Track" ) );
         onModified();
     }
     else
