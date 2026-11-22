@@ -26,7 +26,9 @@
 #include <wx/dataview.h>
 #include <wx/dialog.h>
 #include <wx/display.h>
+#include <wx/eventfilter.h>
 #include <wx/nonownedwnd.h>
+#include <wx/utils.h>
 #include <wx/window.h>
 #include <wx/msw/registry.h>
 
@@ -196,14 +198,72 @@ bool KIPLATFORM::UI::PrepareChoicePopup( wxWindow* )
 }
 
 
+/*
+ * A pointer of its own, for driving the editor unseen (tools/kicad_shot.py in Continuity).
+ *
+ * With KICAD_POSTED_POINTER set, the pointer is where the last mouse message sent to one of our
+ * windows put it, and warping it moves only that: the real pointer is never read or moved. Mouse
+ * messages posted to a window that is off every screen then drive the tools as a hand would.
+ */
+namespace
+{
+bool postedPointer()
+{
+    static const bool posted = wxGetEnv( wxS( "KICAD_POSTED_POINTER" ), nullptr );
+    return posted;
+}
+
+
+wxPoint s_postedAt;
+
+
+class POSTED_POINTER_FILTER : public wxEventFilter
+{
+public:
+    int FilterEvent( wxEvent& aEvent ) override
+    {
+        const wxEventType type = aEvent.GetEventType();
+
+        if( type == wxEVT_MOTION || type == wxEVT_LEFT_DOWN || type == wxEVT_LEFT_UP
+                || type == wxEVT_RIGHT_DOWN || type == wxEVT_RIGHT_UP )
+        {
+            if( wxWindow* window = dynamic_cast<wxWindow*>( aEvent.GetEventObject() ) )
+                s_postedAt = window->ClientToScreen( static_cast<wxMouseEvent&>( aEvent ).GetPosition() );        }
+
+        return Event_Skip;
+    }
+};
+}
+
+
 wxPoint KIPLATFORM::UI::GetMousePosition()
 {
+    if( postedPointer() )
+    {
+        // Added on first use and never removed: a filter destroyed while added asserts.
+        static POSTED_POINTER_FILTER* filter = nullptr;
+
+        if( !filter )
+        {
+            filter = new POSTED_POINTER_FILTER();
+            wxEvtHandler::AddFilter( filter );
+        }
+
+        return s_postedAt;
+    }
+
     return wxGetMousePosition();
 }
 
 
 bool KIPLATFORM::UI::WarpPointer( wxWindow* aWindow, int aX, int aY )
 {
+    if( postedPointer() )
+    {
+        s_postedAt = aWindow->ClientToScreen( wxPoint( aX, aY ) );
+        return true;
+    }
+
     aWindow->WarpPointer( aX, aY );
     return true;
 }
