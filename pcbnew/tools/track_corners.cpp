@@ -658,87 +658,136 @@ private:
     }
 
     /**
-     * The radius each corner of the runs is to have, before any is made.  The most a corner can
-     * have takes half of each straight it shares with another corner, and all but a short lead of
-     * one that ends the run; the factor takes a share of that.  Corners that turn the same way with
-     * their points on one line along their bisector, close together, are tracks turning side by
-     * side: they are laid about the inner one's centre, each the further out by how far its track
-     * runs from the inner, and no wider than its own most.
+     * A bend: corners a to b of a run (corner i lies between pieces i and i + 1), rounded as one
+     * arc in the corner where its first and last straights would meet.  One corner is a bend of
+     * its own; the two corners of a short 45 degree chamfer are one bend, as a fillet rounds it.
      */
-    void sizeArcs( const std::vector<RUN>& aRuns )
+    struct BEND
     {
-        struct AT
+        size_t   m_a = 0;
+        size_t   m_b = 0;
+        VECTOR2D m_v;               ///< where the first and last straights meet
+        VECTOR2D m_u;               ///< back along the first
+        VECTOR2D m_w;               ///< on along the last
+        double   m_alpha = 0;       ///< the angle inside
+        double   m_leadIn = 0;      ///< from m_v back to the first corner
+        double   m_leadOut = 0;     ///< from m_v on to the last corner
+    };
+
+    /// The angle the run turns through at corner i, signed
+    static double turnAt( const std::vector<PIECE>& aP, size_t aI )
+    {
+        VECTOR2D in = aP[aI].m_b - aP[aI].m_a;
+        VECTOR2D out = aP[aI + 1].m_b - aP[aI + 1].m_a;
+        return std::atan2( cross( in, out ), dot( in, out ) );
+    }
+
+    static BEND makeBend( const std::vector<PIECE>& aP, size_t aA, size_t aB )
+    {
+        BEND bend;
+        bend.m_a = aA;
+        bend.m_b = aB;
+        bend.m_u = unit( aP[aA].m_a - aP[aA].m_b );
+        bend.m_w = unit( aP[aB + 1].m_b - aP[aB + 1].m_a );
+        bend.m_alpha = std::acos( std::clamp( dot( bend.m_u, bend.m_w ), -1.0, 1.0 ) );
+        bend.m_v = aP[aA].m_b;
+
+        if( aA != aB )
         {
-            VECTOR2D v;
-            VECTOR2D b;       // the bisector, towards the centre
-            double   half;    // half the angle inside
-            double   most;    // the widest radius its straights allow
-            int      layer;
-        };
+            // The first straight carried on until it meets the last one carried back
+            VECTOR2D from = aP[aA].m_b;
+            VECTOR2D ahead = -bend.m_u;
+            double   s = cross( aP[aB + 1].m_a - from, bend.m_w ) / cross( ahead, bend.m_w );
 
-        std::vector<AT> all;
-        std::map<std::tuple<int, long, long>, std::vector<size_t>> byTurn;
+            bend.m_v = from + ahead * s;
+            bend.m_leadIn = ( bend.m_v - aP[aA].m_b ).EuclideanNorm();
+            bend.m_leadOut = ( bend.m_v - aP[aB + 1].m_a ).EuclideanNorm();
+        }
 
-        for( const RUN& run : aRuns )
+        return bend;
+    }
+
+    /// Whether corners i and i + 1 turn the same way, together less than a half turn
+    static bool chamferAt( const std::vector<PIECE>& aP, size_t aI )
+    {
+        VECTOR2D u, w;
+        double   a;
+
+        if( !cornerAt( aP, aI, u, w, a ) || !cornerAt( aP, aI + 1, u, w, a ) )
+            return false;
+
+        double t1 = turnAt( aP, aI );
+        double t2 = turnAt( aP, aI + 1 );
+        return t1 * t2 > 0 && std::abs( t1 ) + std::abs( t2 ) < PI - 0.05;
+    }
+
+    /// A run's bends: each corner, and each chamfer whose corners were found to be one bend
+    std::vector<BEND> bendsOf( const std::vector<PIECE>& aP, int aLayer ) const
+    {
+        std::vector<BEND> bends;
+        VECTOR2D          u, w;
+        double            a;
+
+        for( size_t i = 0; i + 1 < aP.size(); ++i )
         {
-            const std::vector<PIECE>& p = run.m_pieces;
-            size_t                    n = p.size();
-            std::vector<bool>         is( n, false );
-            std::vector<VECTOR2D>     us( n ), ws( n );
-            std::vector<double>       as( n, 0 );
+            if( !cornerAt( aP, i, u, w, a ) )
+                continue;
 
-            for( size_t i = 0; i + 1 < n; ++i )
-                is[i] = cornerAt( p, i, us[i], ws[i], as[i] );
-
-            auto share =
-                    [&]( size_t j, bool aOtherCorner, bool aRunEnd )
-                    {
-                        double length = p[j].Length();
-
-                        if( aOtherCorner )
-                            return length / 2;
-
-                        if( aRunEnd )
-                            return std::max( 0.0, length - MIN_STRAIGHT );
-
-                        return length;
-                    };
-
-            for( size_t i = 0; i + 1 < n; ++i )
+            if( m_merged.count( cornerKey( aLayer, aP[i].m_b ) ) && chamferAt( aP, i ) )
             {
-                if( !is[i] )
-                    continue;
-
-                double t = std::min( share( i, i > 0 && is[i - 1], i == 0 ),
-                                     share( i + 1, is[i + 1], i + 2 == n ) );
-                AT     at;
-                at.v = p[i].m_b;
-                at.b = unit( us[i] + ws[i] );
-                at.half = as[i] / 2;
-                at.most = t * std::tan( as[i] / 2 );
-                at.layer = run.m_items.front()->GetLayer();
-
-                long du = std::lround( std::atan2( us[i].y, us[i].x ) * 1800 / PI );
-                long dw = std::lround( std::atan2( ws[i].y, ws[i].x ) * 1800 / PI );
-                byTurn[{ at.layer, du, dw }].push_back( all.size() );
-                all.push_back( at );
+                bends.push_back( makeBend( aP, i, i + 1 ) );
+                ++i;
+            }
+            else
+            {
+                bends.push_back( makeBend( aP, i, i ) );
             }
         }
 
+        return bends;
+    }
+
+    /// A bend's place among the others, to find which turn side by side
+    struct AT
+    {
+        VECTOR2D v;
+        VECTOR2D b;               ///< the bisector, towards the centre
+        double   half = 0;        ///< half the angle inside
+        double   most = 0;        ///< the widest radius its straights allow
+        double   least = 0;       ///< the narrowest that keeps its arc on its straights
+        double   chamfer = 0;     ///< the straight between a chamfer's corners
+        double   fillets = 0;     ///< the most that two fillets of the radius take of it
+        int      layer = 0;
+        VECTOR2D key;             ///< its first corner
+        long     du = 0;
+        long     dw = 0;
+    };
+
+    /**
+     * Bends that turn the same way with their points on one line along their bisector, close
+     * together: tracks turning side by side.  Each group nearest the centre first.
+     */
+    static std::vector<std::vector<size_t>> sideBySide( const std::vector<AT>& aAll )
+    {
         const double ONE_LINE = pcbIUScale.mmToIU( 0.02 );
         const double SIDE_BY_SIDE = pcbIUScale.mmToIU( 1.5 );
 
+        std::map<std::tuple<int, long, long>, std::vector<size_t>> byTurn;
+        std::vector<std::vector<size_t>>                           groups;
+
+        for( size_t k = 0; k < aAll.size(); ++k )
+            byTurn[{ aAll[k].layer, aAll[k].du, aAll[k].dw }].push_back( k );
+
         for( auto& [turn, ks] : byTurn )
         {
-            const VECTOR2D b = all[ks.front()].b;
+            const VECTOR2D b = aAll[ks.front()].b;
 
-            auto across = [&]( size_t k ) { return cross( b, all[k].v ); };
-            auto along = [&]( size_t k ) { return dot( b, all[k].v ); };
+            auto across = [&]( size_t k ) { return cross( b, aAll[k].v ); };
+            auto along = [&]( size_t k ) { return dot( b, aAll[k].v ); };
 
             std::sort( ks.begin(), ks.end(),
                        [&]( size_t x, size_t y ) { return across( x ) < across( y ); } );
 
-            // Corners on one line along the bisector
             std::vector<std::vector<size_t>> lines;
 
             for( size_t k = 0; k < ks.size(); ++k )
@@ -751,7 +800,6 @@ private:
 
             for( std::vector<size_t>& line : lines )
             {
-                // Nearest the centre first, then side by side while close
                 std::sort( line.begin(), line.end(),
                            [&]( size_t x, size_t y ) { return along( x ) > along( y ); } );
 
@@ -767,23 +815,130 @@ private:
                         ++last;
                     }
 
-                    const AT& inner = all[line[first]];
-                    double    radius = m_factor * inner.most;
-
-                    if( m_maxRadius > 0 )
-                        radius = std::min( radius, (double) m_maxRadius );
-
-                    for( size_t k = first; k < last; ++k )
-                    {
-                        const AT& at = all[line[k]];
-                        double    out = ( along( line[first] ) - along( line[k] ) )
-                                     * std::sin( at.half );
-
-                        m_radius[cornerKey( at.layer, at.v )] = std::min( radius + out, at.most );
-                    }
-
+                    groups.emplace_back( line.begin() + first, line.begin() + last );
                     first = last;
                 }
+            }
+        }
+
+        return groups;
+    }
+
+    static AT placeOf( const BEND& aBend, const std::vector<PIECE>& aP, int aLayer )
+    {
+        AT at;
+        at.v = aBend.m_v;
+        at.b = unit( aBend.m_u + aBend.m_w );
+        at.half = aBend.m_alpha / 2;
+        at.layer = aLayer;
+        at.key = aP[aBend.m_a].m_b;
+        at.du = std::lround( std::atan2( aBend.m_u.y, aBend.m_u.x ) * 1800 / PI );
+        at.dw = std::lround( std::atan2( aBend.m_w.y, aBend.m_w.x ) * 1800 / PI );
+        return at;
+    }
+
+    /**
+     * The radius each bend of the runs is to have, before any is made.
+     *
+     * With a fillet's radius, a 45 degree chamfer too short for a fillet at each of its corners is
+     * one bend, rounded where its straights would meet; tracks chamfered side by side go by the
+     * inner one, so all of them or none.
+     *
+     * The most a bend can have takes half of each straight it shares with another bend, and all but
+     * a short lead of one that ends the run; the factor takes a share of that, the fillet's radius
+     * caps it.  Bends side by side are laid about the inner one's centre, each the further out by
+     * how far its track runs from the inner, and no wider than its own most.
+     */
+    void sizeArcs( const std::vector<RUN>& aRuns )
+    {
+        if( m_maxRadius > 0 )
+        {
+            std::vector<AT> chamfers;
+
+            for( const RUN& run : aRuns )
+            {
+                const std::vector<PIECE>& p = run.m_pieces;
+                int                       layer = run.m_items.front()->GetLayer();
+
+                for( size_t i = 0; i + 2 < p.size(); ++i )
+                {
+                    if( !chamferAt( p, i ) )
+                        continue;
+
+                    AT at = placeOf( makeBend( p, i, i + 1 ), p, layer );
+                    at.chamfer = p[i + 1].Length();
+                    at.fillets = m_maxRadius * ( std::tan( std::abs( turnAt( p, i ) ) / 2 )
+                                                 + std::tan( std::abs( turnAt( p, i + 1 ) ) / 2 ) );
+                    chamfers.push_back( at );
+                    ++i;
+                }
+            }
+
+            for( const std::vector<size_t>& group : sideBySide( chamfers ) )
+            {
+                if( chamfers[group.front()].chamfer >= chamfers[group.front()].fillets )
+                    continue;
+
+                for( size_t k : group )
+                    m_merged.insert( cornerKey( chamfers[k].layer, chamfers[k].key ) );
+            }
+        }
+
+        std::vector<AT> all;
+
+        for( const RUN& run : aRuns )
+        {
+            const std::vector<PIECE>& p = run.m_pieces;
+            size_t                    n = p.size();
+            int                       layer = run.m_items.front()->GetLayer();
+            std::vector<BEND>         bends = bendsOf( p, layer );
+
+            for( size_t k = 0; k < bends.size(); ++k )
+            {
+                const BEND& bend = bends[k];
+                size_t      first = bend.m_a;
+                size_t      last = bend.m_b + 1;
+
+                double in = p[first].Length();
+
+                if( k > 0 && bends[k - 1].m_b + 1 == first )
+                    in /= 2;
+                else if( first == 0 )
+                    in = std::max( 0.0, in - MIN_STRAIGHT );
+
+                double out = p[last].Length();
+
+                if( k + 1 < bends.size() && bends[k + 1].m_a == last )
+                    out /= 2;
+                else if( last + 1 == n )
+                    out = std::max( 0.0, out - MIN_STRAIGHT );
+
+                AT at = placeOf( bend, p, layer );
+                at.most = std::min( bend.m_leadIn + in, bend.m_leadOut + out )
+                          * std::tan( bend.m_alpha / 2 );
+                at.least = std::max( bend.m_leadIn, bend.m_leadOut ) * std::tan( bend.m_alpha / 2 );
+                all.push_back( at );
+            }
+        }
+
+        for( const std::vector<size_t>& group : sideBySide( all ) )
+        {
+            const AT& inner = all[group.front()];
+            double    radius = m_factor * inner.most;
+
+            if( m_maxRadius > 0 )
+                radius = std::min( radius, (double) m_maxRadius );
+
+            for( size_t k : group )
+            {
+                const AT& at = all[k];
+                double    out = ( dot( at.b, inner.v ) - dot( at.b, at.v ) ) * std::sin( at.half );
+                double    r = std::min( radius + out, at.most );
+
+                if( at.least <= at.most )
+                    r = std::max( r, at.least );
+
+                m_radius[cornerKey( at.layer, at.key )] = r;
             }
         }
     }
@@ -795,37 +950,47 @@ private:
         PCB_TRACK*          like = aRun.m_items.front();
         size_t              n = p.size();
 
-        // A corner i lies between piece i and piece i + 1
-        std::vector<double> want( n, 0 );   // tangent length wanted
-        std::vector<double> alpha( n, 0 );  // the angle inside the corner
+        int               layer = like->GetLayer();
+        std::vector<BEND> bends = bendsOf( p, layer );
+        size_t            m = bends.size();
 
-        for( size_t i = 0; i + 1 < n; ++i )
+        // Each bend's tangent length from where its straights meet, as wanted
+        std::vector<double> t( m, 0 );
+
+        for( size_t k = 0; k < m; ++k )
         {
-            VECTOR2D u, w;
-            double   a;
-
-            if( !cornerAt( p, i, u, w, a ) )
-                continue;
-
-            auto   it = m_radius.find( cornerKey( like->GetLayer(), p[i].m_b ) );
-            double radius = it != m_radius.end()
+            const BEND& bend = bends[k];
+            auto        it = m_radius.find( cornerKey( layer, p[bend.m_a].m_b ) );
+            double      radius = it != m_radius.end()
                                     ? it->second
-                                    : m_factor * std::min( p[i].Length(), p[i + 1].Length() ) / 2
-                                              * std::tan( a / 2 );
+                                    : m_factor
+                                         * std::min( p[bend.m_a].Length(), p[bend.m_b + 1].Length() )
+                                         / 2 * std::tan( bend.m_alpha / 2 );
 
-            alpha[i] = a;
-            want[i] = radius / std::tan( a / 2 );
+            t[k] = radius / std::tan( bend.m_alpha / 2 );
         }
 
-        // Each straight shared between the corners at its ends, by what they want
-        std::vector<double> t = want;
+        // The bend that ends on each straight, and the one that starts on it
+        std::vector<int> ending( n, -1 ), starting( n, -1 ), within( n, -1 );
 
+        for( size_t k = 0; k < m; ++k )
+        {
+            starting[bends[k].m_a] = (int) k;
+            ending[bends[k].m_b + 1] = (int) k;
+
+            for( size_t j = bends[k].m_a + 1; j <= bends[k].m_b; ++j )
+                within[j] = (int) k;
+        }
+
+        // Each straight shared between the bends at its ends, by what they want of it
         for( int pass = 0; pass < 4; ++pass )
         {
             for( size_t j = 0; j < n; ++j )
             {
-                double before = j > 0 ? t[j - 1] : 0;
-                double after = j + 1 < n ? t[j] : 0;
+                int    e = ending[j];
+                int    s = starting[j];
+                double before = e >= 0 ? std::max( 0.0, t[e] - bends[e].m_leadOut ) : 0;
+                double after = s >= 0 ? std::max( 0.0, t[s] - bends[s].m_leadIn ) : 0;
                 double length = p[j].Length();
                 double total = before + after;
 
@@ -852,46 +1017,49 @@ private:
 
                 if( scale != 1.0 )
                 {
-                    if( j > 0 )
-                        t[j - 1] *= scale;
+                    if( e >= 0 )
+                        t[e] = bends[e].m_leadOut + before * scale;
 
-                    if( j + 1 < n )
-                        t[j] *= scale;
+                    if( s >= 0 )
+                        t[s] = bends[s].m_leadIn + after * scale;
                 }
             }
         }
 
         // The widest arc that keeps its clearances and everything joined to its tracks, sharp
         // where there is no room
-        std::vector<FILLET> fillets( n );
-        std::vector<bool>   made( n, false );
+        std::vector<FILLET> fillets( m );
+        std::vector<bool>   made( m, false );
 
-        for( size_t i = 0; i + 1 < n; ++i )
+        for( size_t k = 0; k < m; ++k )
         {
-            if( alpha[i] <= 0 )
-                continue;
+            const BEND& bend = bends[k];
+            double      half = std::tan( bend.m_alpha / 2 );
+            double      radius = t[k] * half;
+            double      least = std::max( bend.m_leadIn, bend.m_leadOut ) * half;
+            VECTOR2D    at = p[bend.m_a].m_b;
 
-            VECTOR2D v = p[i].m_b;
-            VECTOR2D u = unit( p[i].m_a - v );
-            VECTOR2D w = unit( p[i + 1].m_b - v );
-            double   radius = t[i] * std::tan( alpha[i] / 2 );
+            // Each outer straight's far part is the other bend's to check
+            std::vector<const PIECE*> around;
 
-            // Each straight's far part is the other corner's to check
-            std::vector<VECTOR2I> joins = joinsOn( { &p[i], &p[i + 1] }, aRun, like );
+            for( size_t j = bend.m_a; j <= bend.m_b + 1; ++j )
+                around.push_back( &p[j] );
+
+            std::vector<VECTOR2I> joins = joinsOn( around, aRun, like );
 
             auto fits =
                     [&]( double aRadius, wxString* aWhy )
                     {
-                        FILLET f = fillet( v, u, w, aRadius );
+                        FILLET f = fillet( bend.m_v, bend.m_u, bend.m_w, aRadius );
                         PIECE  before, arc, after;
-                        before.m_a = p[i].m_a;
+                        before.m_a = p[bend.m_a].m_a;
                         before.m_b = f.m_t1;
                         arc.m_arc = true;
                         arc.m_a = f.m_t1;
                         arc.m_mid = f.m_mid;
                         arc.m_b = f.m_t2;
                         after.m_a = f.m_t2;
-                        after.m_b = p[i + 1].m_b;
+                        after.m_b = p[bend.m_b + 1].m_b;
 
                         if( !keeps( joins, { before, arc, after }, like->GetWidth() ) )
                         {
@@ -901,14 +1069,21 @@ private:
                             return false;
                         }
 
-                        // The corner it takes the place of
-                        PIECE in, out;
+                        // The corner, or the chamfer, it takes the place of
+                        std::vector<PIECE> old;
+                        PIECE              in, out;
                         in.m_a = f.m_t1;
-                        in.m_b = v;
-                        out.m_a = v;
-                        out.m_b = f.m_t2;
+                        in.m_b = p[bend.m_a].m_b;
+                        old.push_back( in );
 
-                        std::optional<wxString> why = clash( arc, like, { in, out } );
+                        for( size_t j = bend.m_a + 1; j <= bend.m_b; ++j )
+                            old.push_back( p[j] );
+
+                        out.m_a = p[bend.m_b + 1].m_a;
+                        out.m_b = f.m_t2;
+                        old.push_back( out );
+
+                        std::optional<wxString> why = clash( arc, like, old );
 
                         if( why && aWhy )
                             *aWhy = wxS( "an arc would come " ) + *why;
@@ -918,18 +1093,18 @@ private:
 
             wxString why;
 
-            if( radius < MIN_RADIUS )
+            if( radius < std::max( MIN_RADIUS, least ) )
             {
-                m_result.m_left.push_back( wxS( "the corner " ) + where( v, like )
+                m_result.m_left.push_back( wxS( "the corner " ) + where( at, like )
                                            + wxS( ": its tracks are too short for an arc" ) );
                 continue;
             }
 
             if( !fits( radius, &why ) )
             {
-                double lo = 0, hi = radius;
+                double lo = least, hi = radius;
 
-                for( int k = 0; k < 14; ++k )
+                for( int step = 0; step < 14; ++step )
                 {
                     double mid = ( lo + hi ) / 2;
 
@@ -939,9 +1114,9 @@ private:
                         hi = mid;
                 }
 
-                if( lo < MIN_RADIUS )
+                if( lo < MIN_RADIUS || !fits( lo, nullptr ) )
                 {
-                    m_result.m_left.push_back( wxS( "the corner " ) + where( v, like ) + wxS( ": " )
+                    m_result.m_left.push_back( wxS( "the corner " ) + where( at, like ) + wxS( ": " )
                                                + why );
                     continue;
                 }
@@ -949,39 +1124,45 @@ private:
                 radius = lo;
             }
 
-            fillets[i] = fillet( v, u, w, radius );
-            made[i] = true;
+            fillets[k] = fillet( bend.m_v, bend.m_u, bend.m_w, radius );
+            made[k] = true;
         }
 
-        // Laid out as pieces: each straight cut back to its arcs' tangent points
+        // Laid out as pieces: each straight cut back to its arcs' tangent points, a chamfer made
+        // one arc gone
         std::vector<PIECE> out;
 
         for( size_t j = 0; j < n; ++j )
         {
-            PIECE s = p[j];
+            if( within[j] >= 0 && made[within[j]] )
+                continue;
 
-            if( j > 0 && made[j - 1] )
+            PIECE piece = p[j];
+            int   e = ending[j];
+            int   s = starting[j];
+
+            if( e >= 0 && made[e] )
             {
-                s.m_a = fillets[j - 1].m_t2;
-                s.m_changed = true;
+                piece.m_a = fillets[e].m_t2;
+                piece.m_changed = true;
             }
 
-            if( j + 1 < n && made[j] )
+            if( s >= 0 && made[s] )
             {
-                s.m_b = fillets[j].m_t1;
-                s.m_changed = true;
+                piece.m_b = fillets[s].m_t1;
+                piece.m_changed = true;
             }
 
-            if( s.Length() > NOTHING || s.m_arc )
-                out.push_back( s );
+            if( piece.Length() > NOTHING || piece.m_arc )
+                out.push_back( piece );
 
-            if( j + 1 < n && made[j] )
+            if( s >= 0 && made[s] )
             {
                 PIECE arc;
                 arc.m_arc = true;
-                arc.m_a = fillets[j].m_t1;
-                arc.m_mid = fillets[j].m_mid;
-                arc.m_b = fillets[j].m_t2;
+                arc.m_a = fillets[s].m_t1;
+                arc.m_mid = fillets[s].m_mid;
+                arc.m_b = fillets[s].m_t2;
                 arc.m_changed = true;
                 out.push_back( arc );
                 ++m_result.m_changed;
@@ -1336,7 +1517,8 @@ private:
     TRACK_CORNER_STYLE                                 m_style;
     double                                             m_factor;
     int                                                m_maxRadius;
-    std::map<std::tuple<int, int, int>, double>        m_radius;    ///< by layer and corner
+    std::map<std::tuple<int, int, int>, double>        m_radius;    ///< by layer and first corner
+    std::set<std::tuple<int, int, int>>                m_merged;    ///< chamfers that are one bend
     CHECK_IFACE                                        m_iface;
     PNS::NODE                                          m_world;
     std::map<std::pair<int, int>, std::vector<PCB_TRACK*>> m_ends;
