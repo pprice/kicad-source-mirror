@@ -42,6 +42,7 @@
 #include <trace_helpers.h>
 
 #include <wx/app.h>
+#include <wx/dcclient.h>
 #include <wx/evtloop.h>
 #include <wx/frame.h>
 #include <wx/image.h>
@@ -3275,6 +3276,16 @@ std::pair<VECTOR2D, float> OPENGL_GAL::computeBitmapTextSize( const UTF8& aText 
 
 void OPENGL_GAL::onPaint( wxPaintEvent& aEvent )
 {
+    // Continuity: before the first frame the window would show Windows' white; it shows the
+    // ground the panel gave it instead (EDA_DRAW_PANEL_GAL::SwitchBackend). Once drawing, GL
+    // covers it all and this is skipped.
+    if( !m_isInitialized )
+    {
+        wxPaintDC dc( this );
+        dc.SetBackground( wxBrush( GetBackgroundColour() ) );
+        dc.Clear();
+    }
+
     PostPaint( aEvent );
 }
 

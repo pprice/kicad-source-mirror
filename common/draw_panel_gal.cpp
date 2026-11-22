@@ -21,6 +21,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include <wx/dcclient.h>
+#include <wx/settings.h>
 
 #include <chrono>
 
@@ -1632,6 +1633,21 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
 
     m_gal = new_gal;
     m_gal->SetCursorInCanvas( m_cursorInCanvas );
+
+    // Continuity (Phil, 2026-11-22: "when you start up the tool - the pcb area is white"): a
+    // canvas window shows Windows' white until its first frame, which waits for the board. It
+    // takes the editor's own ground now, and paints it until then (OPENGL_GAL::onPaint).
+    {
+        wxColour ground = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
+
+        if( m_edaFrame )
+            ground = m_edaFrame->GetDrawBgColor().WithAlpha( 1.0 ).ToColour();
+
+        SetBackgroundColour( ground );
+
+        if( wxWindow* galWindow = dynamic_cast<wxWindow*>( m_gal ) )
+            galWindow->SetBackgroundColour( ground );
+    }
 
     // The view lays itself out in the editor's world units as it attaches
     if( worldUnitLength > 0.0 )
