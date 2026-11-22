@@ -491,7 +491,8 @@ message ConvertCorners
 
   CornerStyle style = 4;
 
-  // The widest arc made; absent, no limit but the factor
+  // A fillet's radius: the widest arc made, or for tracks turning side by side the inner's, the
+  // others further out by their spacing; absent, no limit but the factor
   kiapi.common.types.Distance max_radius = 5;
 
   // Work it out and return it without changing the board

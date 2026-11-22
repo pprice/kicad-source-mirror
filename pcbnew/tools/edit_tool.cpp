@@ -89,7 +89,6 @@ using namespace std::placeholders;
 #include <dialogs/dialog_tablecell_properties.h>
 #include <dialogs/dialog_multi_unit_entry.h>
 #include <dialogs/dialog_unit_entry.h>
-#include <dialogs/dialog_text_entry.h>
 #include <pcb_reference_image.h>
 
 const unsigned int EDIT_TOOL::COORDS_PADDING = pcbIUScale.mmToIU( 20 );
@@ -1635,8 +1634,8 @@ int EDIT_TOOL::FilletTracks( const TOOL_EVENT& aEvent )
 
 int EDIT_TOOL::ConvertTrackCorners( const TOOL_EVENT& aEvent )
 {
-    // How much of each corner is curved, kept for the next time
-    static double factor = 1.0;
+    // The fillet's radius, kept for the next time
+    static long long int radius = pcbIUScale.mmToIU( 0.6 );
 
     const bool toArcs = aEvent.IsAction( &PCB_ACTIONS::roundTrackCorners );
 
@@ -1670,30 +1669,36 @@ int EDIT_TOOL::ConvertTrackCorners( const TOOL_EVENT& aEvent )
 
     if( toArcs )
     {
-        WX_TEXT_ENTRY_DIALOG dlg( frame(), _( "Arc factor (1 curves the whole corner):" ),
-                                  _( "Round Corners" ), wxString::Format( wxS( "%g" ), factor ) );
+        std::vector<WX_MULTI_ENTRY_DIALOG::ENTRY> entries{
+            {
+                    _( "Radius:" ),
+                    WX_MULTI_ENTRY_DIALOG::UNIT_BOUND{ radius },
+                    _( "Each corner gets this radius, or as much as its tracks allow; a large "
+                       "radius curves the whole bend.  Tracks that turn side by side keep their "
+                       "spacing: the inner gets the radius, the others more." ),
+            },
+        };
+
+        WX_MULTI_ENTRY_DIALOG dlg( frame(), _( "Round Corners" ), entries );
 
         if( dlg.ShowModal() == wxID_CANCEL )
             return 0;
 
-        double value = 0;
+        std::vector<WX_MULTI_ENTRY_DIALOG::RESULT> results = dlg.GetValues();
 
-        wxString text = dlg.GetValue().Strip( wxString::both );
-        bool     read = text.ToCDouble( &value ) || text.ToDouble( &value );
-
-        if( !read || value <= 0 || value > 1 )
+        if( results.size() != 1 || !std::holds_alternative<long long int>( results[0] )
+            || std::get<long long int>( results[0] ) <= 0 )
         {
-            frame()->ShowInfoBarError( _( "The arc factor is a number above 0 and up to 1." ) );
             return 0;
         }
 
-        factor = value;
+        radius = std::get<long long int>( results[0] );
     }
 
     BOARD_COMMIT         commit( this );
     TRACK_CORNERS_RESULT result = ::ConvertTrackCorners(
             board(), tracks, toArcs ? TRACK_CORNER_STYLE::ARCS : TRACK_CORNER_STYLE::MITERED_45,
-            factor, 0, commit );
+            1.0, (int) radius, commit );
 
     if( result.m_changed > 0 )
     {
