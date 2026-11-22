@@ -89,6 +89,7 @@ using namespace std::placeholders;
 #include <dialogs/dialog_tablecell_properties.h>
 #include <dialogs/dialog_multi_unit_entry.h>
 #include <dialogs/dialog_unit_entry.h>
+#include <dialogs/dialog_text_entry.h>
 #include <pcb_reference_image.h>
 
 const unsigned int EDIT_TOOL::COORDS_PADDING = pcbIUScale.mmToIU( 20 );
@@ -1634,8 +1635,8 @@ int EDIT_TOOL::FilletTracks( const TOOL_EVENT& aEvent )
 
 int EDIT_TOOL::ConvertTrackCorners( const TOOL_EVENT& aEvent )
 {
-    // The widest arc tried, kept for the next time
-    static int maxRadius = pcbIUScale.mmToIU( 2 );
+    // How much of each corner is curved, kept for the next time
+    static double factor = 1.0;
 
     const bool toArcs = aEvent.IsAction( &PCB_ACTIONS::roundTrackCorners );
 
@@ -1669,18 +1670,30 @@ int EDIT_TOOL::ConvertTrackCorners( const TOOL_EVENT& aEvent )
 
     if( toArcs )
     {
-        WX_UNIT_ENTRY_DIALOG dlg( frame(), _( "Round Corners" ), _( "Widest radius:" ), maxRadius );
+        WX_TEXT_ENTRY_DIALOG dlg( frame(), _( "Arc factor (1 curves the whole corner):" ),
+                                  _( "Round Corners" ), wxString::Format( wxS( "%g" ), factor ) );
 
-        if( dlg.ShowModal() == wxID_CANCEL || dlg.GetValue() <= 0 )
+        if( dlg.ShowModal() == wxID_CANCEL )
             return 0;
 
-        maxRadius = dlg.GetValue();
+        double value = 0;
+
+        wxString text = dlg.GetValue().Strip( wxString::both );
+        bool     read = text.ToCDouble( &value ) || text.ToDouble( &value );
+
+        if( !read || value <= 0 || value > 1 )
+        {
+            frame()->ShowInfoBarError( _( "The arc factor is a number above 0 and up to 1." ) );
+            return 0;
+        }
+
+        factor = value;
     }
 
     BOARD_COMMIT         commit( this );
     TRACK_CORNERS_RESULT result = ::ConvertTrackCorners(
             board(), tracks, toArcs ? TRACK_CORNER_STYLE::ARCS : TRACK_CORNER_STYLE::MITERED_45,
-            maxRadius, commit );
+            factor, 0, commit );
 
     if( result.m_changed > 0 )
     {

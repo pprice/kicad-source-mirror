@@ -2735,13 +2735,16 @@ HANDLER_RESULT<ConvertCornersResponse> API_HANDLER_PCB::handleConvertCorners(
 
     int maxRadius = req.has_max_radius() ? (int) req.max_radius().value_nm() : 0;
 
+    if( req.factor() < 0 || req.factor() > 1 )
+        return badRequest( "factor must be above 0 and at most 1" );
+
     std::unique_ptr<BOARD_COMMIT> commit( static_cast<BOARD_COMMIT*>( createCommit().release() ) );
 
     TRACK_CORNERS_RESULT result = ConvertTrackCorners(
             board, tracks,
             req.style() == CornerStyle::CS_ARCS ? TRACK_CORNER_STYLE::ARCS
                                                 : TRACK_CORNER_STYLE::MITERED_45,
-            maxRadius, *commit );
+            req.factor(), maxRadius, *commit );
 
     ConvertCornersResponse response;
     response.set_changed( result.m_changed );

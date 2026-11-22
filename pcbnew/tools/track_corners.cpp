@@ -19,10 +19,12 @@
 
 #include "track_corners.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <optional>
 #include <set>
+#include <tuple>
 
 #include <board.h>
 #include <board_commit.h>
@@ -213,10 +215,11 @@ std::vector<VECTOR2D> miterPoints( const VECTOR2D& aC, const VECTOR2D& aS, doubl
 class CORNERS
 {
 public:
-    CORNERS( BOARD* aBoard, TRACK_CORNER_STYLE aStyle, int aMaxRadius ) :
+    CORNERS( BOARD* aBoard, TRACK_CORNER_STYLE aStyle, double aFactor, int aMaxRadius ) :
             m_board( aBoard ),
             m_style( aStyle ),
-            m_maxRadius( aMaxRadius > 0 ? aMaxRadius : pcbIUScale.mmToIU( 2 ) )
+            m_factor( aFactor > 0 ? std::min( aFactor, 1.0 ) : 1.0 ),
+            m_maxRadius( aMaxRadius )
     {
         m_iface.SetBoard( aBoard );
         m_iface.SyncWorld( &m_world );
@@ -269,6 +272,9 @@ public:
 
             runs.push_back( std::move( run ) );
         }
+
+        if( m_style == TRACK_CORNER_STYLE::ARCS )
+            sizeArcs( runs );
 
         // Round after round, each run's new copper put into the world as it is made: where two
         // tracks turn side by side the outer can only follow once the inner has turned
@@ -626,6 +632,162 @@ private:
         return std::nullopt;
     }
 
+    /**
+     * The corner between straights i and i + 1, if there is one: aU back along the first, aW on
+     * along the second, aAlpha the angle inside it.  Straight on or doubling back is none.
+     */
+    static bool cornerAt( const std::vector<PIECE>& aP, size_t aI, VECTOR2D& aU, VECTOR2D& aW,
+                          double& aAlpha )
+    {
+        if( aI + 1 >= aP.size() || aP[aI].m_arc || aP[aI + 1].m_arc || aP[aI].Length() == 0
+            || aP[aI + 1].Length() == 0 )
+        {
+            return false;
+        }
+
+        aU = unit( aP[aI].m_a - aP[aI].m_b );
+        aW = unit( aP[aI + 1].m_b - aP[aI + 1].m_a );
+        aAlpha = std::acos( std::clamp( dot( aU, aW ), -1.0, 1.0 ) );
+        return aAlpha < PI - 0.01 && aAlpha > 0.01;
+    }
+
+    static std::tuple<int, int, int> cornerKey( int aLayer, const VECTOR2D& aV )
+    {
+        VECTOR2I v = toI( aV );
+        return { aLayer, v.x, v.y };
+    }
+
+    /**
+     * The radius each corner of the runs is to have, before any is made.  The most a corner can
+     * have takes half of each straight it shares with another corner, and all but a short lead of
+     * one that ends the run; the factor takes a share of that.  Corners that turn the same way with
+     * their points on one line along their bisector, close together, are tracks turning side by
+     * side: they are laid about the inner one's centre, each the further out by how far its track
+     * runs from the inner, and no wider than its own most.
+     */
+    void sizeArcs( const std::vector<RUN>& aRuns )
+    {
+        struct AT
+        {
+            VECTOR2D v;
+            VECTOR2D b;       // the bisector, towards the centre
+            double   half;    // half the angle inside
+            double   most;    // the widest radius its straights allow
+            int      layer;
+        };
+
+        std::vector<AT> all;
+        std::map<std::tuple<int, long, long>, std::vector<size_t>> byTurn;
+
+        for( const RUN& run : aRuns )
+        {
+            const std::vector<PIECE>& p = run.m_pieces;
+            size_t                    n = p.size();
+            std::vector<bool>         is( n, false );
+            std::vector<VECTOR2D>     us( n ), ws( n );
+            std::vector<double>       as( n, 0 );
+
+            for( size_t i = 0; i + 1 < n; ++i )
+                is[i] = cornerAt( p, i, us[i], ws[i], as[i] );
+
+            auto share =
+                    [&]( size_t j, bool aOtherCorner, bool aRunEnd )
+                    {
+                        double length = p[j].Length();
+
+                        if( aOtherCorner )
+                            return length / 2;
+
+                        if( aRunEnd )
+                            return std::max( 0.0, length - MIN_STRAIGHT );
+
+                        return length;
+                    };
+
+            for( size_t i = 0; i + 1 < n; ++i )
+            {
+                if( !is[i] )
+                    continue;
+
+                double t = std::min( share( i, i > 0 && is[i - 1], i == 0 ),
+                                     share( i + 1, is[i + 1], i + 2 == n ) );
+                AT     at;
+                at.v = p[i].m_b;
+                at.b = unit( us[i] + ws[i] );
+                at.half = as[i] / 2;
+                at.most = t * std::tan( as[i] / 2 );
+                at.layer = run.m_items.front()->GetLayer();
+
+                long du = std::lround( std::atan2( us[i].y, us[i].x ) * 1800 / PI );
+                long dw = std::lround( std::atan2( ws[i].y, ws[i].x ) * 1800 / PI );
+                byTurn[{ at.layer, du, dw }].push_back( all.size() );
+                all.push_back( at );
+            }
+        }
+
+        const double ONE_LINE = pcbIUScale.mmToIU( 0.02 );
+        const double SIDE_BY_SIDE = pcbIUScale.mmToIU( 1.5 );
+
+        for( auto& [turn, ks] : byTurn )
+        {
+            const VECTOR2D b = all[ks.front()].b;
+
+            auto across = [&]( size_t k ) { return cross( b, all[k].v ); };
+            auto along = [&]( size_t k ) { return dot( b, all[k].v ); };
+
+            std::sort( ks.begin(), ks.end(),
+                       [&]( size_t x, size_t y ) { return across( x ) < across( y ); } );
+
+            // Corners on one line along the bisector
+            std::vector<std::vector<size_t>> lines;
+
+            for( size_t k = 0; k < ks.size(); ++k )
+            {
+                if( k == 0 || across( ks[k] ) - across( ks[k - 1] ) > ONE_LINE )
+                    lines.emplace_back();
+
+                lines.back().push_back( ks[k] );
+            }
+
+            for( std::vector<size_t>& line : lines )
+            {
+                // Nearest the centre first, then side by side while close
+                std::sort( line.begin(), line.end(),
+                           [&]( size_t x, size_t y ) { return along( x ) > along( y ); } );
+
+                size_t first = 0;
+
+                while( first < line.size() )
+                {
+                    size_t last = first + 1;
+
+                    while( last < line.size()
+                           && along( line[last - 1] ) - along( line[last] ) <= SIDE_BY_SIDE )
+                    {
+                        ++last;
+                    }
+
+                    const AT& inner = all[line[first]];
+                    double    radius = m_factor * inner.most;
+
+                    if( m_maxRadius > 0 )
+                        radius = std::min( radius, (double) m_maxRadius );
+
+                    for( size_t k = first; k < last; ++k )
+                    {
+                        const AT& at = all[line[k]];
+                        double    out = ( along( line[first] ) - along( line[k] ) )
+                                     * std::sin( at.half );
+
+                        m_radius[cornerKey( at.layer, at.v )] = std::min( radius + out, at.most );
+                    }
+
+                    first = last;
+                }
+            }
+        }
+    }
+
     /// Each corner between two straights becomes an arc
     void round( RUN& aRun )
     {
@@ -639,19 +801,20 @@ private:
 
         for( size_t i = 0; i + 1 < n; ++i )
         {
-            if( p[i].m_arc || p[i + 1].m_arc || p[i].Length() == 0 || p[i + 1].Length() == 0 )
+            VECTOR2D u, w;
+            double   a;
+
+            if( !cornerAt( p, i, u, w, a ) )
                 continue;
 
-            VECTOR2D u = unit( p[i].m_a - p[i].m_b );
-            VECTOR2D w = unit( p[i + 1].m_b - p[i + 1].m_a );
-            double   a = std::acos( std::clamp( dot( u, w ), -1.0, 1.0 ) );
-
-            // Straight on, or doubling back on itself
-            if( a > PI - 0.01 || a < 0.01 )
-                continue;
+            auto   it = m_radius.find( cornerKey( like->GetLayer(), p[i].m_b ) );
+            double radius = it != m_radius.end()
+                                    ? it->second
+                                    : m_factor * std::min( p[i].Length(), p[i + 1].Length() ) / 2
+                                              * std::tan( a / 2 );
 
             alpha[i] = a;
-            want[i] = m_maxRadius / std::tan( a / 2 );
+            want[i] = radius / std::tan( a / 2 );
         }
 
         // Each straight shared between the corners at its ends, by what they want
@@ -674,13 +837,20 @@ private:
                 if( total > length )
                     scale = length / total;
 
-                // Nothing left between, or at least the least straight
+                // Nothing left between, or at least the least straight: a hair left is taken up
+                // by the arcs, more is made the least straight
                 double left = length - total * scale;
 
                 if( left > NOTHING && left < MIN_STRAIGHT )
-                    scale = length > MIN_STRAIGHT ? ( length - MIN_STRAIGHT ) / total : length / total;
+                {
+                    if( left < MIN_STRAIGHT / 2 )
+                        scale = length / total;
+                    else
+                        scale = length > MIN_STRAIGHT ? ( length - MIN_STRAIGHT ) / total
+                                                      : length / total;
+                }
 
-                if( scale < 1.0 )
+                if( scale != 1.0 )
                 {
                     if( j > 0 )
                         t[j - 1] *= scale;
@@ -698,7 +868,7 @@ private:
 
         for( size_t i = 0; i + 1 < n; ++i )
         {
-            if( want[i] <= 0 )
+            if( alpha[i] <= 0 )
                 continue;
 
             VECTOR2D v = p[i].m_b;
@@ -819,7 +989,56 @@ private:
         }
 
         joinUp( out );
+        mergeArcs( out );
         p = out;
+    }
+
+    static VECTOR2D centreOf( const PIECE& aArc )
+    {
+        SHAPE_ARC shape( toI( aArc.m_a ), toI( aArc.m_mid ), toI( aArc.m_b ), 0 );
+        return shape.GetCenter();
+    }
+
+    /// The angle an arc turns through, signed
+    static double sweepOf( const PIECE& aArc, const VECTOR2D& aCentre )
+    {
+        VECTOR2D s = aArc.m_a - aCentre;
+        VECTOR2D m = aArc.m_mid - aCentre;
+        return 2 * std::atan2( cross( s, m ), dot( s, m ) );
+    }
+
+    /// Two new arcs that meet with one centre and radius, the two halves of a bend, become one
+    static void mergeArcs( std::vector<PIECE>& aPieces )
+    {
+        const double       SAME = pcbIUScale.mmToIU( 0.002 );
+        std::vector<PIECE> merged;
+
+        for( const PIECE& piece : aPieces )
+        {
+            if( !merged.empty() && piece.m_arc && merged.back().m_arc
+                && ( piece.m_changed || merged.back().m_changed ) )
+            {
+                PIECE&   last = merged.back();
+                VECTOR2D c1 = centreOf( last );
+                VECTOR2D c2 = centreOf( piece );
+                double   r1 = ( last.m_a - c1 ).EuclideanNorm();
+                double   r2 = ( piece.m_a - c2 ).EuclideanNorm();
+                double   sweep = sweepOf( last, c1 ) + sweepOf( piece, c2 );
+
+                if( ( c1 - c2 ).EuclideanNorm() < SAME && std::abs( r1 - r2 ) < SAME
+                    && std::abs( sweep ) < PI - 0.01 )
+                {
+                    last.m_mid = c1 + rotate( last.m_a - c1, sweep / 2 );
+                    last.m_b = piece.m_b;
+                    last.m_changed = true;
+                    continue;
+                }
+            }
+
+            merged.push_back( piece );
+        }
+
+        aPieces = merged;
     }
 
     /// Each piece starts exactly where the one before ends: a straight of next to nothing taken out
@@ -1115,7 +1334,9 @@ private:
 
     BOARD*                                             m_board;
     TRACK_CORNER_STYLE                                 m_style;
+    double                                             m_factor;
     int                                                m_maxRadius;
+    std::map<std::tuple<int, int, int>, double>        m_radius;    ///< by layer and corner
     CHECK_IFACE                                        m_iface;
     PNS::NODE                                          m_world;
     std::map<std::pair<int, int>, std::vector<PCB_TRACK*>> m_ends;
@@ -1126,9 +1347,9 @@ private:
 
 
 TRACK_CORNERS_RESULT ConvertTrackCorners( BOARD* aBoard, const std::vector<PCB_TRACK*>& aTracks,
-                                          TRACK_CORNER_STYLE aStyle, int aMaxRadius,
-                                          BOARD_COMMIT& aCommit )
+                                          TRACK_CORNER_STYLE aStyle, double aFactor,
+                                          int aMaxRadius, BOARD_COMMIT& aCommit )
 {
-    CORNERS corners( aBoard, aStyle, aMaxRadius );
+    CORNERS corners( aBoard, aStyle, aFactor, aMaxRadius );
     return corners.Run( aTracks, aCommit );
 }

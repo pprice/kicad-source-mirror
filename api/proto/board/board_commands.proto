@@ -473,9 +473,11 @@ enum CornerStyle
 
 // Turns the corners of tracks into arcs, or arcs into 45 degree corners, as the editor's Round
 // Corners and 45 Degree Corners do.  Tracks are taken as runs, joined end to end on one layer at one
-// width with nothing else where they meet.  A corner becomes the widest arc up to max_radius that
-// fits along both its tracks and keeps every clearance; an arc becomes the straights round its
-// outside, wider where that comes too near something.  One undo step in the editor.
+// width with nothing else where they meet.  A corner becomes an arc sized by factor of the most its
+// straights allow (two corners share the straight between them, so at 1 a 45 degree bend is one
+// arc), tracks turning side by side about one centre, each made smaller where it would come too
+// near something; an arc becomes the straights round its outside, wider where that comes too near
+// something.  One undo step in the editor.
 // Returns ConvertCornersResponse.
 message ConvertCorners
 {
@@ -489,11 +491,14 @@ message ConvertCorners
 
   CornerStyle style = 4;
 
-  // The widest arc tried; absent, 2 mm
+  // The widest arc made; absent, no limit but the factor
   kiapi.common.types.Distance max_radius = 5;
 
   // Work it out and return it without changing the board
   bool dry_run = 6;
+
+  // How much of each corner is curved, above 0 and up to 1; absent or 0, 1
+  double factor = 7;
 }
 
 message ConvertCornersResponse

@@ -58,15 +58,22 @@ struct TRACK_CORNERS_RESULT
  * KiCad's router knows.
  *
  * The tracks given are taken as runs: tracks and arcs joined end to end on one layer, of one width,
- * with nothing else where they meet.  A corner becomes the widest arc up to \a aMaxRadius that fits
- * along both its tracks (two corners share the straight between them) and comes no nearer any other
- * net than its rules allow.  An arc becomes the straight tracks round its outside that turn at 45
- * degrees, made wider where that comes too near something.  What is left between two arcs is nothing
- * or at least 0.1 mm.
+ * with nothing else where they meet.
+ *
+ * A corner becomes an arc sized by \a aFactor of the most it could be: each straight between two
+ * corners is shared half and half, so at 1 the two corners of a 45 degree bend meet in the middle
+ * of its diagonal as one arc, and at 0.5 half of each side is curved.  Corners that turn side by
+ * side, as a bus does, are laid about one centre: the inner sized by the factor, the others further
+ * out by how far apart they run.  \a aMaxRadius caps the radius where it is above 0.  An arc that
+ * would come nearer another net than its rules allow, and nearer than the corner was, is made
+ * smaller until it does not.
+ *
+ * An arc becomes the straight tracks round its outside that turn at 45 degrees, made wider where
+ * that comes too near something.  What is left between two arcs is nothing or at least 0.1 mm.
  *
  * The board's rules engine must be ready, as for the router.  Changes are staged in \a aCommit,
  * which is not pushed.
  */
 TRACK_CORNERS_RESULT ConvertTrackCorners( BOARD* aBoard, const std::vector<PCB_TRACK*>& aTracks,
-                                          TRACK_CORNER_STYLE aStyle, int aMaxRadius,
-                                          BOARD_COMMIT& aCommit );
+                                          TRACK_CORNER_STYLE aStyle, double aFactor,
+                                          int aMaxRadius, BOARD_COMMIT& aCommit );
