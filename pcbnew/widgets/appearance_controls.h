@@ -321,6 +321,13 @@ private:
 
     void syncColorsAndVisibility();
 
+    /**
+     * Continuity: the colour a layer's swatch shows. A copper layer whose zones are all on one
+     * net is that net's plane, drawn in the net's colour while net colours are on, so its swatch
+     * shows that colour, as the mock has it (GND grey, the supply its own). Else the theme's.
+     */
+    KIGFX::COLOR4D shownLayerColour( int aLayer ) const;
+
     void rebuildObjects();
 
     void syncObjectSettings();

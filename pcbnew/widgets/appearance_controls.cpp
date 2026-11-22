@@ -28,6 +28,7 @@
 #include <pcb_track.h>
 #include <eda_list_dialog.h>
 #include <string_utils.h>
+#include <zone.h>
 #include <footprint_edit_frame.h>
 #include <confirm.h>
 #include <pcb_display_options.h>
@@ -1877,7 +1878,7 @@ void APPEARANCE_CONTROLS::rebuildLayers()
                 aSetting->ctl_panel->SetId( layer );
                 aSetting->ctl_indicator->SetWindowID( layer );
                 aSetting->ctl_color->SetWindowID( layer );
-                aSetting->ctl_color->SetSwatchColor( theme->GetColor( layer ), false );
+                aSetting->ctl_color->SetSwatchColor( shownLayerColour( layer ), false );
                 aSetting->ctl_visibility->SetWindowID( layer );
                 aSetting->ctl_text->SetLabelText( aSetting->label );
                 aSetting->ctl_text->SetId( layer );
@@ -2276,6 +2277,55 @@ void APPEARANCE_CONTROLS::SetTabIndex( int aTab )
 }
 
 
+KIGFX::COLOR4D APPEARANCE_CONTROLS::shownLayerColour( int aLayer ) const
+{
+    COLOR4D theme = m_frame->GetColorSettings()->GetColor( aLayer );
+    BOARD*  board = m_frame->GetBoard();
+
+    // Inner layers only: the outer ones carry tracks of every net, and a pour there says
+    // nothing of the layer.
+    if( m_isFpEditor || !board || !IsInnerCopperLayer( aLayer )
+            || m_frame->GetDisplayOptions().m_NetColorMode != NET_COLOR_MODE::ALL )
+    {
+        return theme;
+    }
+
+    // A plane split between supplies (the video board's PWR: 5 V round the rim, 3.3 V in the
+    // middle) is shown as the net with the most of it.
+    std::map<NETINFO_ITEM*, double> area;
+
+    for( ZONE* zone : board->Zones() )
+    {
+        if( zone->GetIsRuleArea() || !zone->IsOnLayer( ToLAYER_ID( aLayer ) ) )
+            continue;
+
+        if( !zone->GetNet() || zone->GetNetCode() <= 0 )
+            continue;
+
+        area[zone->GetNet()] += zone->Outline()->Area();
+    }
+
+    NETINFO_ITEM* plane = nullptr;
+    double        most = 0.0;
+
+    for( const auto& [net, netArea] : area )
+    {
+        if( netArea > most )
+        {
+            most = netArea;
+            plane = net;
+        }
+    }
+
+    if( !plane )
+        return theme;
+
+    wxColour colour = m_frame->NetColour( UnescapeString( plane->GetNetname() ) );
+
+    return colour.IsOk() ? COLOR4D( colour ) : theme;
+}
+
+
 void APPEARANCE_CONTROLS::syncColorsAndVisibility()
 {
     COLOR_SETTINGS* theme    = m_frame->GetColorSettings();
@@ -2294,8 +2344,7 @@ void APPEARANCE_CONTROLS::syncColorsAndVisibility()
 
         if( setting->ctl_color )
         {
-            const COLOR4D& color = theme->GetColor( layer );
-            setting->ctl_color->SetSwatchColor( color, false );
+            setting->ctl_color->SetSwatchColor( shownLayerColour( layer ), false );
             setting->ctl_color->SetReadOnly( readOnly );
         }
     }
@@ -3577,6 +3626,7 @@ void APPEARANCE_CONTROLS::onNetColorMode( wxCommandEvent& aEvent )
 
     m_frame->SetDisplayOptions( options );
     m_frame->GetCanvas()->GetView()->UpdateAllLayersColor();
+    syncColorsAndVisibility();   // a plane's swatch shows its net's colour only with them on
     passOnFocus();
 }
 
