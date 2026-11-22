@@ -1963,6 +1963,13 @@ wxString describeClash( PNS::ROUTER& aRouter, const PNS::ITEM* aLaid, const PNS:
 
     wxString why = wxString::Format( wxS( "it would come too near %s" ), what );
 
+    if( const SHAPE* shape = aObstacle.m_item->Shape( aObstacle.m_item->Layer() ) )
+    {
+        VECTOR2I at = shape->Centre();
+        why << wxString::Format( wxS( " at %.3f, %.3f mm" ), pcbIUScale.IUTomm( at.x ),
+                                 pcbIUScale.IUTomm( at.y ) );
+    }
+
     // The other line's own pad: the pair is wider than the pins it meets, or its lines swap
     // sides between its ends
     if( aPair && aObstacle.m_item->Net() == aRouter.GetRuleResolver()->DpCoupledNet( aLaid->Net() ) )
@@ -2583,6 +2590,12 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleDragTrack(
             const int      step = pcbIUScale.mmToIU( 0.2 );
             const int      count = std::max( 1, KiROUND( d.EuclideanNorm() / step ) );
             VECTOR2I       lastFit = grab;
+            bool           firstFailed = false;
+
+            // Picked up where it lies first, as a hand does: the dragger takes the first move's
+            // fate as the whole drag's, and marks obstacles from then on if that one fails
+            if( !router.Move( grab, nullptr ) )
+                firstFailed = true;
 
             for( int i = 1; i < count; ++i )
             {
@@ -2599,7 +2612,12 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleDragTrack(
             else if( !router.FixRoute( to, nullptr, false, false ) )
             {
                 std::optional<wxString> clash = dragClash( router );
-                fail( clash ? *clash : wxString( wxS( "it could not be fixed there" ) ), lastFit );
+                wxString why = clash ? *clash : wxString( wxS( "it could not be fixed there" ) );
+
+                if( firstFailed )
+                    why << wxS( " (it would not take hold where it lies)" );
+
+                fail( why, lastFit );
             }
             else
             {
