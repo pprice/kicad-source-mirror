@@ -370,6 +370,11 @@ void PCB_BASE_EDIT_FRAME::configureToolbars()
                 {
                     m_SelLayerBox = new PCB_LAYER_BOX_SELECTOR( aToolbar, ID_ON_LAYER_SELECT );
                     m_SelLayerBox->SetBoardFrame( this );
+
+                    // Continuity, as the mock has it: the layer's name alone. Its hotkey in
+                    // brackets ran the name past the box ("Front.Cu (PgU"); the tooltip and
+                    // the Layers menu still give the keys.
+                    m_SelLayerBox->SetLayersHotkeys( false );
                 }
 
                 m_SelLayerBox->SetToolTip( _( "+/- to switch" ) );

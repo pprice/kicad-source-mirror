@@ -358,7 +358,13 @@ void ACTION_TOOLBAR::ApplyConfiguration( const TOOLBAR_CONFIGURATION& aConfig )
             break;
 
         case TOOLBAR_ITEM_TYPE::SPACER:
-            AddSpacer( item.m_Size );
+            // Continuity: a spacer of no size takes the room left, as the mock's chips at the
+            // toolbar's right end need.
+            if( item.m_Size < 0 )
+                AddStretchSpacer();
+            else
+                AddSpacer( item.m_Size );
+
             break;
 
         case TOOLBAR_ITEM_TYPE::TB_GROUP:

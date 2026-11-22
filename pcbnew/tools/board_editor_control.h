@@ -95,6 +95,7 @@ public:
     int ToggleLayersManager( const TOOL_EVENT& aEvent );
     int ToggleProperties( const TOOL_EVENT& aEvent );
     int ToggleNetInspector( const TOOL_EVENT& aEvent );
+    int TogglePane( const TOOL_EVENT& aEvent );
     int ToggleGitCommitPane( const TOOL_EVENT& aEvent );
     int ToggleSearch( const TOOL_EVENT& aEvent );
     int ToggleConstraintsPanel( const TOOL_EVENT& aEvent );

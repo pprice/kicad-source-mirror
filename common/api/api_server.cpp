@@ -131,7 +131,16 @@ void KICAD_API_SERVER::Start()
 
     wxFileName socket;
 
-    if( m_socketPathOverride.IsEmpty() )
+    // Continuity: KICAD_API_SOCKET_PATH names where to listen, so a tool that starts this KiCad
+    // beside another can talk to this one alone (the other holds the standard socket).
+    wxString fromEnv;
+
+    if( m_socketPathOverride.IsEmpty() && wxGetEnv( wxS( "KICAD_API_SOCKET_PATH" ), &fromEnv )
+        && !fromEnv.IsEmpty() )
+    {
+        socket.Assign( fromEnv );
+    }
+    else if( m_socketPathOverride.IsEmpty() )
     {
         socket = StandardSocketPath();
     }

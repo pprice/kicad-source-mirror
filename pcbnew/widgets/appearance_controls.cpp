@@ -670,35 +670,25 @@ void APPEARANCE_CONTROLS::createControls()
     m_rbHighContrastNormal->SetToolTip( _( "Inactive layers will be shown in full color" ) );
 
     contrastModeSizer->Add( m_rbHighContrastNormal, 0, wxRIGHT, 5 );
-    contrastModeSizer->AddStretchSpacer();
+    contrastModeSizer->AddSpacer( FromDIP( 10 ) );
 
     m_rbHighContrastDim = new wxRadioButton( layerDisplayPane, wxID_ANY, _( "Dim" ) );
     m_rbHighContrastDim->SetFont( infoFont );
     m_rbHighContrastDim->SetToolTip( _( "Inactive layers will be dimmed" ) );
 
     contrastModeSizer->Add( m_rbHighContrastDim, 0, wxRIGHT, 5 );
-    contrastModeSizer->AddStretchSpacer();
+    contrastModeSizer->AddSpacer( FromDIP( 10 ) );
 
     m_rbHighContrastOff = new wxRadioButton( layerDisplayPane, wxID_ANY, _( "Hide" ) );
     m_rbHighContrastOff->SetFont( infoFont );
     m_rbHighContrastOff->SetToolTip( _( "Inactive layers will be hidden" ) );
 
     contrastModeSizer->Add( m_rbHighContrastOff, 0, 0, 5 );
-    contrastModeSizer->AddStretchSpacer();
+    contrastModeSizer->AddSpacer( FromDIP( 10 ) );
 
-    layerDisplayOptionsSizer->Add( contrastModeSizer, 0, wxEXPAND, 5 );
-
-    m_layerDisplaySeparator = new wxStaticLine( layerDisplayPane, wxID_ANY, wxDefaultPosition,
-                                                wxDefaultSize, wxLI_HORIZONTAL );
-    layerDisplayOptionsSizer->Add( m_layerDisplaySeparator, 0, wxEXPAND | wxTOP, 4 );
-
-    m_cbFlipBoard = new wxCheckBox( layerDisplayPane, wxID_ANY, _( "Flip board view" ) );
-    m_cbFlipBoard->SetFont( infoFont );
-    layerDisplayOptionsSizer->Add( m_cbFlipBoard, 0, wxTOP | wxBOTTOM, 3 );
+    layerDisplayOptionsSizer->Add( contrastModeSizer, 0, wxEXPAND | wxBOTTOM, 6 );
 
     layerDisplayPane->SetSizer( layerDisplayOptionsSizer );
-    layerDisplayPane->Layout();
-    layerDisplayOptionsSizer->Fit( layerDisplayPane );
 
     m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, 3 );
 
@@ -710,6 +700,51 @@ void APPEARANCE_CONTROLS::createControls()
                                          m_sizerOuter->Layout();
                                          Thaw();
                                      } );
+
+    // Continuity, as the mock has it (docs/kicad-look.md): what is chosen once in a while, the saved
+    // presets and viewports and flipping the board, folded away under the layer options, where the
+    // base panel stood them open at the foot of every tab.
+    WX_COLLAPSIBLE_PANE* paneViews = new WX_COLLAPSIBLE_PANE( m_panelLayers, wxID_ANY,
+                                                              _( "Presets, viewports and flip" ) );
+    paneViews->Collapse();
+    paneViews->SetBackgroundColour( m_notebook->GetThemeBackgroundColour() );
+
+    wxWindow*   viewsPane = paneViews->GetPane();
+    wxBoxSizer* viewsSizer = new wxBoxSizer( wxVERTICAL );
+
+    m_sizerOuter->Remove( 1 );  // the base's sizer for presets and viewports; its controls move here
+
+    for( wxWindow* moved : { (wxWindow*) m_presetsLabel, (wxWindow*) m_cbLayerPresets,
+                             (wxWindow*) m_viewportsLabel, (wxWindow*) m_cbViewports } )
+    {
+        moved->Reparent( viewsPane );
+    }
+
+    viewsSizer->Add( m_presetsLabel, 0, wxEXPAND | wxBOTTOM, 2 );
+    viewsSizer->Add( m_cbLayerPresets, 0, wxEXPAND | wxBOTTOM, 6 );
+    viewsSizer->Add( m_viewportsLabel, 0, wxEXPAND | wxBOTTOM, 2 );
+    viewsSizer->Add( m_cbViewports, 0, wxEXPAND | wxBOTTOM, 6 );
+
+    m_layerDisplaySeparator = nullptr;
+
+    m_cbFlipBoard = new wxCheckBox( viewsPane, wxID_ANY, _( "Flip board view" ) );
+    m_cbFlipBoard->SetFont( infoFont );
+    viewsSizer->Add( m_cbFlipBoard, 0, wxBOTTOM, 3 );
+
+    viewsPane->SetSizer( viewsSizer );
+    viewsPane->Layout();
+    viewsSizer->Fit( viewsPane );
+
+    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, 3 );
+
+    paneViews->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
+                     [&]( wxCommandEvent& aEvent )
+                     {
+                         Freeze();
+                         m_panelLayers->Fit();
+                         m_sizerOuter->Layout();
+                         Thaw();
+                     } );
 
     // Create net display options
 
@@ -729,38 +764,47 @@ void APPEARANCE_CONTROLS::createControls()
     else
         msg = _( "Net colors:" );
 
-    m_txtNetDisplayTitle = new wxStaticText( netDisplayPane, wxID_ANY, msg );
+    // Continuity, as the mock has it: in the board editor the net colours sit with the inactive
+    // layers on the Layers tab, the two choices that change how the whole board looks.
+    wxWindow*   colourPane = m_isFpEditor ? netDisplayPane : layerDisplayPane;
+    wxBoxSizer* colourSizer = m_isFpEditor ? netDisplayOptionsSizer : layerDisplayOptionsSizer;
+
+    m_txtNetDisplayTitle = new wxStaticText( colourPane, wxID_ANY, msg );
     m_txtNetDisplayTitle->SetFont( infoFont );
     m_txtNetDisplayTitle->Wrap( -1 );
     m_txtNetDisplayTitle->SetToolTip( _( "Choose when to show net and netclass colors" ) );
 
-    netDisplayOptionsSizer->Add( m_txtNetDisplayTitle, 0, wxEXPAND | wxBOTTOM | wxLEFT, 2 );
+    colourSizer->Add( m_txtNetDisplayTitle, 0, wxEXPAND | wxBOTTOM, 2 );
 
     wxBoxSizer* netColorSizer = new wxBoxSizer( wxHORIZONTAL );
 
-    m_rbNetColorAll = new wxRadioButton( netDisplayPane, wxID_ANY, _( "All" ), wxDefaultPosition,
+    m_rbNetColorAll = new wxRadioButton( colourPane, wxID_ANY, _( "All" ), wxDefaultPosition,
                                          wxDefaultSize, wxRB_GROUP );
     m_rbNetColorAll->SetFont( infoFont );
     m_rbNetColorAll->SetToolTip( _( "Net and netclass colors are shown on all copper items" ) );
 
     netColorSizer->Add( m_rbNetColorAll, 0, wxRIGHT, 5 );
-    netColorSizer->AddStretchSpacer();
+    netColorSizer->AddSpacer( FromDIP( 10 ) );
 
-    m_rbNetColorRatsnest = new wxRadioButton( netDisplayPane, wxID_ANY, _( "Ratsnest" ) );
+    m_rbNetColorRatsnest = new wxRadioButton( colourPane, wxID_ANY, _( "Ratsnest" ) );
     m_rbNetColorRatsnest->SetFont( infoFont );
     m_rbNetColorRatsnest->SetValue( true );
     m_rbNetColorRatsnest->SetToolTip( _( "Net and netclass colors are shown on the ratsnest only" ) );
 
     netColorSizer->Add( m_rbNetColorRatsnest, 0, wxRIGHT, 5 );
-    netColorSizer->AddStretchSpacer();
+    netColorSizer->AddSpacer( FromDIP( 10 ) );
 
-    m_rbNetColorOff = new wxRadioButton( netDisplayPane, wxID_ANY, _( "None" ) );
+    m_rbNetColorOff = new wxRadioButton( colourPane, wxID_ANY, _( "None" ) );
     m_rbNetColorOff->SetFont( infoFont );
     m_rbNetColorOff->SetToolTip( _( "Net and netclass colors are not shown" ) );
 
     netColorSizer->Add( m_rbNetColorOff, 0, 0, 5 );
+    netColorSizer->AddSpacer( FromDIP( 10 ) );
 
-    netDisplayOptionsSizer->Add( netColorSizer, 0, wxEXPAND | wxBOTTOM, 5 );
+    colourSizer->Add( netColorSizer, 0, wxEXPAND | wxBOTTOM, 5 );
+
+    layerDisplayPane->Layout();
+    layerDisplayOptionsSizer->Fit( layerDisplayPane );
 
     //// Ratsnest display
 
@@ -1704,6 +1748,30 @@ void APPEARANCE_CONTROLS::rebuildLayers()
     m_windowLayersSizerItem->SetFlag( m_windowLayersSizerItem->GetFlag() & ~wxTOP );
 #endif
 
+    // Continuity, as the mock has it: each row says quietly on its right what the layer is when its
+    // name does not, the standard name of a renamed copper layer ("In1.Cu" for "GND") and which
+    // side another is on.
+    auto layerNote =
+            []( int aLayer, const wxString& aLabel ) -> wxString
+            {
+                PCB_LAYER_ID layer = ToLAYER_ID( aLayer );
+                wxString     standard = LSET::Name( layer );
+
+                if( IsCopperLayer( layer ) )
+                    return aLabel == standard ? wxString() : standard;
+
+                if( layer == Edge_Cuts )
+                    return _( "outline" );
+
+                if( IsFrontLayer( layer ) )
+                    return _( "front" );
+
+                if( IsBackLayer( layer ) )
+                    return _( "back" );
+
+                return wxString();
+            };
+
     auto appendLayer =
             [&]( std::unique_ptr<APPEARANCE_SETTING>& aSetting )
             {
@@ -1743,6 +1811,15 @@ void APPEARANCE_CONTROLS::rebuildLayers()
                 sizer->Add( btn_visible, 0, wxALIGN_CENTER_VERTICAL | wxTOP, 2 );
                 sizer->AddSpacer( 5 );
                 sizer->Add( label, 1, wxALIGN_CENTER_VERTICAL | wxTOP, 2 );
+
+                wxStaticText* note = new wxStaticText( panel, wxID_ANY, layerNote( layer, aSetting->label ),
+                                                       wxDefaultPosition, wxDefaultSize, 0, wxS( "layerNote" ) );
+                note->SetForegroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
+                note->SetFont( KIUI::GetSmallInfoFont( note ) );
+                sizer->Add( note, 0, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT, 2 );
+                sizer->AddSpacer( 8 );
+                note->Bind( wxEVT_LEFT_DOWN, &APPEARANCE_CONTROLS::onLayerLeftClick, this );
+                note->Bind( wxEVT_RIGHT_DOWN, &APPEARANCE_CONTROLS::rightClickHandler, this );
 
                 m_layersOuterSizer->Add( panel, 0, wxEXPAND, 0 );
 
@@ -1791,6 +1868,14 @@ void APPEARANCE_CONTROLS::rebuildLayers()
                 aSetting->ctl_text->SetLabelText( aSetting->label );
                 aSetting->ctl_text->SetId( layer );
                 aSetting->ctl_text->SetToolTip( aSetting->tooltip );
+
+                // FindWindow, the row's own child: wx's FindWindowByName is static and searches
+                // every window, so it found the first row's note whichever row asked.
+                if( wxWindow* note = aSetting->ctl_panel->FindWindow( wxS( "layerNote" ) ) )
+                {
+                    static_cast<wxStaticText*>( note )->SetLabelText( layerNote( layer, aSetting->label ) );
+                    aSetting->ctl_panel->Layout();
+                }
             };
 
     // technical layers are shown in this order:

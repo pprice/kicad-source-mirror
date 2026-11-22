@@ -163,19 +163,33 @@ private:
         if( !gc )
             return;
 
+        // As the mock draws them: a hairline pill in the problem colour, the count in it, no fill.
         const wxColour problem( 255, 92, 191 );   // Continuity's --c-problem
-        const wxColour face = wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE );
-        const wxColour ground( ( face.Red() * 4 + problem.Red() ) / 5, ( face.Green() * 4 + problem.Green() ) / 5,
-                               ( face.Blue() * 4 + problem.Blue() ) / 5 );
+        const double   line = FromDIP( 1.25 );
 
         gc->SetFont( GetFont(), problem );
 
         const wxSize size = GetClientSize();
-        const double padX = FromDIP( 10 ), gap = FromDIP( 6 ), height = size.y - FromDIP( 6 );
-        double       x = 0;
+        const double padX = FromDIP( 8 ), gap = FromDIP( 6 ), height = size.y - FromDIP( 8 );
+        const auto   chips = { std::make_pair( m_unrouted, _( "unrouted" ) ),
+                               std::make_pair( m_markers, _( "from the check" ) ) };
 
-        for( const auto& [count, what] : { std::make_pair( m_unrouted, _( "unrouted" ) ),
-                                           std::make_pair( m_markers, _( "from the check" ) ) } )
+        // The chips stand at the toolbar's right end, so they are drawn from the control's right.
+        double x = size.x - FromDIP( 4 );
+
+        for( const auto& [count, what] : chips )
+        {
+            if( !count )
+                continue;
+
+            double tw, th;
+            gc->GetTextExtent( chipText( count, what ), &tw, &th );
+            x -= tw + 2 * padX + gap;
+        }
+
+        x += gap;
+
+        for( const auto& [count, what] : chips )
         {
             if( !count )
                 continue;
@@ -187,9 +201,9 @@ private:
             const double w = tw + 2 * padX;
             const double y = ( size.y - height ) / 2;
 
-            gc->SetPen( *wxTRANSPARENT_PEN );
-            gc->SetBrush( wxBrush( ground ) );
-            gc->DrawRoundedRectangle( x, y, w, height, height / 2 );
+            gc->SetPen( gc->CreatePen( wxGraphicsPenInfo( problem, line ) ) );
+            gc->SetBrush( *wxTRANSPARENT_BRUSH );
+            gc->DrawRoundedRectangle( x + line / 2, y + line / 2, w - line, height - line, FromDIP( 4 ) );
             gc->DrawText( text, x + padX, y + ( height - th ) / 2 );
             x += w + gap;
         }
@@ -273,6 +287,10 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
     // clang-format off
     switch( aToolbar )
     {
+    // Continuity: the toolbars are cut to the mock's (prototypes/kicad-look/mock.html in
+    // pprice/continuity): what is used while placing and routing, one row along the top with the
+    // track, via and layer choices in it. Everything else is in the menus, and Preferences,
+    // Toolbars puts any of it back.
     case TOOLBAR_LOC::LEFT:
         config.AppendAction( ACTIONS::toggleGrid )
               .WithContextMenu(
@@ -287,8 +305,6 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
 
                       return menu;
                   } )
-              .AppendAction( ACTIONS::toggleGridOverrides )
-              .AppendAction( PCB_ACTIONS::togglePolarCoords )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Units" ) )
                             .AddAction( ACTIONS::millimetersUnits )
                             .AddAction( ACTIONS::inchesUnits )
@@ -296,45 +312,16 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Crosshair modes" ) )
                             .AddAction( ACTIONS::cursorSmallCrosshairs )
                             .AddAction( ACTIONS::cursorFullCrosshairs )
-                            .AddAction( ACTIONS::cursor45Crosshairs ) );
-
-        config.AppendSeparator()
-            .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Line modes" ) )
-                        .AddAction( PCB_ACTIONS::lineModeFree )
-                        .AddAction( PCB_ACTIONS::lineMode90 )
-                        .AddAction( PCB_ACTIONS::lineMode45 ) )
-            .AppendAction( PCB_ACTIONS::toggleAutoConstraints );
-
-        config.AppendSeparator()
+                            .AddAction( ACTIONS::cursor45Crosshairs ) )
               .AppendAction( PCB_ACTIONS::showRatsnest )
-              .AppendAction( PCB_ACTIONS::ratsnestLineMode );
+              .AppendAction( ACTIONS::highContrastMode );
 
         config.AppendSeparator()
-              .AppendAction( ACTIONS::highContrastMode )
-              .AppendAction( PCB_ACTIONS::toggleNetHighlight );
-
-        config.AppendSeparator()
-              .AppendAction( PCB_ACTIONS::zoneDisplayFilled )
-              .AppendAction( PCB_ACTIONS::zoneDisplayOutline );
-
-        if( ADVANCED_CFG::GetCfg().m_ExtraZoneDisplayModes )
-        {
-            config.AppendAction( PCB_ACTIONS::zoneDisplayFractured );
-            config.AppendAction( PCB_ACTIONS::zoneDisplayTriangulated );
-        }
-
-        config.AppendSeparator()
+              .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Zone display" ) )
+                            .AddAction( PCB_ACTIONS::zoneDisplayFilled )
+                            .AddAction( PCB_ACTIONS::zoneDisplayOutline ) )
               .AppendAction( PCB_ACTIONS::padDisplayMode )
-              .AppendAction( PCB_ACTIONS::viaDisplayMode )
               .AppendAction( PCB_ACTIONS::trackDisplayMode );
-
-        if( ADVANCED_CFG::GetCfg().m_DrawBoundingBoxes )
-            config.AppendAction( ACTIONS::toggleBoundingBoxes );
-
-        // Tools to show/hide toolbars:
-        config.AppendSeparator()
-              .AppendAction( PCB_ACTIONS::showLayersManager )
-              .AppendAction( ACTIONS::showProperties );
 
         break;
 
@@ -345,7 +332,6 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
               .AppendAction( PCB_ACTIONS::localRatsnestTool );
 
         config.AppendSeparator()
-              .AppendAction( PCB_ACTIONS::placeFootprint )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Track routing tools" ) )
                             .AddAction( PCB_ACTIONS::routeSingleTrack )
                             .AddAction( PCB_ACTIONS::routeDiffPair )
@@ -368,11 +354,12 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
                             .AddAction( PCB_ACTIONS::tuneSingleTrack )
                             .AddAction( PCB_ACTIONS::tuneDiffPair )
                             .AddAction( PCB_ACTIONS::tuneSkew ) )
-              .AppendAction( PCB_ACTIONS::showDiffPhaseSkew )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Via tools" ) )
                             .AddAction( PCB_ACTIONS::drawVia )
                             .AddAction( PCB_ACTIONS::placeViaStack )
-                            .AddAction( PCB_ACTIONS::drawViaStitchArea ) )
+                            .AddAction( PCB_ACTIONS::drawViaStitchArea ) );
+
+        config.AppendSeparator()
               .AppendAction( PCB_ACTIONS::drawZone )
               .WithContextMenu(
                   []( TOOL_MANAGER* aMgr ) -> std::unique_ptr<ACTION_MENU>
@@ -416,48 +403,21 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Circle" ) )
                             .AddAction( PCB_ACTIONS::drawCircle )
                             .AddAction( PCB_ACTIONS::drawEllipse ) )
-              .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Constraints" ) )
-                            .AddAction( PCB_ACTIONS::addConstraintCoincident )
-                            .AddAction( PCB_ACTIONS::addConstraintPointOnLine )
-                            .AddAction( PCB_ACTIONS::addConstraintMidpoint )
-                            .AddAction( PCB_ACTIONS::addConstraintSymmetric )
-                            .AddAction( PCB_ACTIONS::addConstraintFixedPosition )
-                            .AddAction( PCB_ACTIONS::addConstraintParallel )
-                            .AddAction( PCB_ACTIONS::addConstraintPerpendicular )
-                            .AddAction( PCB_ACTIONS::addConstraintCollinear )
-                            .AddAction( PCB_ACTIONS::addConstraintHorizontal )
-                            .AddAction( PCB_ACTIONS::addConstraintVertical )
-                            .AddAction( PCB_ACTIONS::addConstraintTangent )
-                            .AddAction( PCB_ACTIONS::addConstraintEqualLength )
-                            .AddAction( PCB_ACTIONS::addConstraintEqualRadius )
-                            .AddAction( PCB_ACTIONS::addConstraintConcentric )
-                            .AddAction( PCB_ACTIONS::addConstraintFixedLength )
-                            .AddAction( PCB_ACTIONS::addConstraintFixedRadius )
-                            .AddAction( PCB_ACTIONS::addConstraintArcAngle )
-                            .AddAction( PCB_ACTIONS::addConstraintAngular ) )
-              .AppendAction( PCB_ACTIONS::drawPolygon )
-              .AppendAction( PCB_ACTIONS::drawBezier )
-              .AppendAction( PCB_ACTIONS::placeReferenceImage )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Text objects" ) )
                             .AddAction( PCB_ACTIONS::placeText )
                             .AddAction( PCB_ACTIONS::drawTextBox ) )
-              .AppendAction( PCB_ACTIONS::drawTable )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Dimension objects" ) )
                             .AddAction( PCB_ACTIONS::drawOrthogonalDimension )
                             .AddAction( PCB_ACTIONS::drawAlignedDimension )
                             .AddAction( PCB_ACTIONS::drawCenterDimension )
                             .AddAction( PCB_ACTIONS::drawRadialDimension )
-                            .AddAction( PCB_ACTIONS::drawLeader ) )
-              .AppendAction( PCB_ACTIONS::placeBarcode )
-              .AppendAction( ACTIONS::deleteTool );
+                            .AddAction( PCB_ACTIONS::drawLeader ) );
 
         config.AppendSeparator()
+              .AppendAction( ACTIONS::measureTool )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "PCB origins and points" ) )
                             .AddAction( ACTIONS::gridSetOrigin )
-                            .AddAction( PCB_ACTIONS::drillOrigin ) )
-                            .AppendAction( PCB_ACTIONS::placePoint )
-              .AppendAction( PCB_ACTIONS::placeSubGrid )
-              .AppendAction( ACTIONS::measureTool );
+                            .AddAction( PCB_ACTIONS::drillOrigin ) );
 
         break;
 
@@ -471,87 +431,35 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         config.AppendAction( ACTIONS::save );
 
         config.AppendSeparator()
-              .AppendAction( PCB_ACTIONS::boardSetup );
-
-        config.AppendSeparator()
-              .AppendAction( ACTIONS::pageSettings )
-              .AppendAction( ACTIONS::print )
-              .AppendAction( ACTIONS::plot );
-
-        config.AppendSeparator()
               .AppendAction( ACTIONS::undo )
               .AppendAction( ACTIONS::redo );
 
         config.AppendSeparator()
-              .AppendAction( ACTIONS::find );
-
-        config.AppendSeparator()
-              .AppendAction( ACTIONS::zoomRedraw )
+              .AppendAction( ACTIONS::find )
               .AppendAction( ACTIONS::zoomInCenter )
               .AppendAction( ACTIONS::zoomOutCenter )
-              .AppendAction( ACTIONS::zoomFitScreen )
-              .AppendAction( ACTIONS::zoomFitObjects )
-              .AppendAction( ACTIONS::zoomTool );
+              .AppendAction( ACTIONS::zoomFitScreen );
 
         config.AppendSeparator()
-              .AppendAction( PCB_ACTIONS::rotateCcw )
-              .AppendAction( PCB_ACTIONS::rotateCw )
-              .AppendAction( PCB_ACTIONS::mirrorV )
-              .AppendAction( PCB_ACTIONS::mirrorH )
-              .AppendAction( ACTIONS::group )
-              .AppendAction( ACTIONS::ungroup )
-              .AppendAction( PCB_ACTIONS::lock )
-              .AppendAction( PCB_ACTIONS::unlock );
+              .AppendAction( PCB_ACTIONS::showNetInspector )
+              .AppendAction( PCB_ACTIONS::runDRC )
+              .AppendAction( ACTIONS::show3DViewer )
+              .AppendControl( ACTION_TOOLBAR_CONTROLS::ipcScripting );
 
         config.AppendSeparator()
-              .AppendAction( ACTIONS::showFootprintEditor )
-              .AppendAction( ACTIONS::showFootprintBrowser )
-              .AppendAction( ACTIONS::show3DViewer );
+              .AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::trackWidth )
+              .AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::viaDiameter )
+              .AppendControl( ACTION_TOOLBAR_CONTROLS::layerSelector );
 
-        config.AppendSeparator();
-
-        if( !Kiface().IsSingle() )
-            config.AppendAction( ACTIONS::updatePcbFromSchematic );
-        else
-            config.AppendAction( PCB_ACTIONS::importNetlist );
-
-        config.AppendAction( PCB_ACTIONS::runDRC )
-              .AppendAction( PCB_ACTIONS::editFootprintFields );
-
-        config.AppendSeparator();
-        config.AppendAction( PCB_ACTIONS::showEeschema );
-        config.AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::currentVariant );
-        config.AppendControl( ACTION_TOOLBAR_CONTROLS::ipcScripting );
-
-        config.AppendSeparator();
+        // The chips at the toolbar's right end, as the mock has them.
+        config.AppendSpacer( -1 );
         config.AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::problems );
 
         break;
 
     case TOOLBAR_LOC::TOP_AUX:
-        config.AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::trackWidth )
-              .AppendAction( PCB_ACTIONS::autoTrackWidth );
-
-        config.AppendSeparator()
-              .AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::viaDiameter );
-
-        config.AppendSeparator()
-              .AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::viaStack );
-
-        config.AppendSeparator()
-              .AppendControl( ACTION_TOOLBAR_CONTROLS::layerSelector )
-              .AppendAction( PCB_ACTIONS::selectLayerPair );
-
-        config.AppendSeparator()
-              .AppendControl( ACTION_TOOLBAR_CONTROLS::gridSelect );
-
-        config.AppendSeparator()
-              .AppendControl( ACTION_TOOLBAR_CONTROLS::zoomSelect );
-
-        config.AppendSeparator()
-              .AppendControl( ACTION_TOOLBAR_CONTROLS::overrideLocks );
-
-        break;
+        // Continuity: no second row; its choices that are used are on the one above.
+        return std::nullopt;
     }
 
     // clang-format on
@@ -948,7 +856,8 @@ void PCB_EDIT_FRAME::UpdateViaStackSelectBox( wxChoice* aViaStackSelectBox )
 
 void PCB_EDIT_FRAME::ReCreateLayerBox( bool aForceResizeToolbar )
 {
-    if( m_SelLayerBox == nullptr || m_tbTopAux == nullptr )
+    // Continuity: the layer box may be on the main toolbar, with no aux toolbar at all.
+    if( m_SelLayerBox == nullptr )
         return;
 
     m_SelLayerBox->SetToolTip( _( "+/- to switch" ) );
@@ -1007,6 +916,18 @@ void PCB_EDIT_FRAME::ToggleNetInspector()
         settings->m_AuiPanels.net_inspector_width = m_netInspectorPanel->GetSize().x;
         m_auimgr.Update();
     }
+}
+
+
+void PCB_EDIT_FRAME::TogglePane( const wxString& aName )
+{
+    wxAuiPaneInfo& pane = m_auimgr.GetPane( aName );
+
+    if( !pane.IsOk() )
+        return;
+
+    pane.Show( !pane.IsShown() );
+    m_auimgr.Update();
 }
 
 

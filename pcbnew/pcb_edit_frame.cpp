@@ -31,7 +31,10 @@
 #include <wx/filedlg.h>
 #include <wx/hyperlink.h>
 #include <wx/socket.h>
+#include <wx/uri.h>
 #include <wx/wupdlock.h>
+
+#include <widgets/webview_panel.h>
 
 #include <advanced_config.h>
 #include <connectivity/connectivity_data.h>
@@ -339,8 +342,12 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     // Rows; layers 4 - 6
     m_auimgr.AddPane( m_tbTopMain, EDA_PANE().HToolbar().Name( wxS( "TopMainToolbar" ) )
                       .Top().Layer( 6 ) );
-    m_auimgr.AddPane( m_tbTopAux, EDA_PANE().HToolbar().Name( wxS( "TopAuxToolbar" ) )
-                      .Top().Layer( 5 ) );
+    // Continuity: there may be no aux toolbar (its default is none).
+    if( m_tbTopAux )
+    {
+        m_auimgr.AddPane( m_tbTopAux, EDA_PANE().HToolbar().Name( wxS( "TopAuxToolbar" ) )
+                          .Top().Layer( 5 ) );
+    }
     m_auimgr.AddPane( m_messagePanel, EDA_PANE().Messages().Name( wxS( "MsgPanel" ) )
                       .Bottom().Layer( 6 ) );
 
@@ -428,6 +435,46 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                       .CloseButton( true )
                       .Hide() );
 
+    // Continuity's Work view, docked beside Appearance (docs/kicad-look.md in pprice/continuity,
+    // phase 9): the page its local server serves, in panel mode. Shown only when that server
+    // answers; CONTINUITY_URL names another.
+    {
+        wxString url;
+
+        if( !wxGetEnv( wxS( "CONTINUITY_URL" ), &url ) || url.IsEmpty() )
+            url = wxS( "http://127.0.0.1:7420/" );
+
+        wxURI    uri( url );
+        bool     answers = false;
+        wxIPV4address address;
+
+        if( address.Hostname( uri.GetServer() ) )
+        {
+            address.Service( uri.HasPort() ? uri.GetPort() : wxString( wxS( "80" ) ) );
+
+            wxSocketClient probe( wxSOCKET_BLOCK );
+            probe.SetTimeout( 1 );
+            answers = probe.Connect( address, true );
+            probe.Close();
+        }
+
+        if( answers )
+        {
+            WEBVIEW_PANEL* continuity = new WEBVIEW_PANEL( this );
+            continuity->SetHandleExternalLinks( true );   // the page's own links stay in the panel
+            continuity->LoadURL( url + ( url.Contains( wxS( "?" ) ) ? wxS( "&" ) : wxS( "?" ) )
+                                 + wxS( "panel=work" ) );
+
+            m_auimgr.AddPane( continuity, EDA_PANE().Name( wxS( "Continuity" ) )
+                              .Right().Layer( 4 ).Position( 1 )
+                              .Caption( wxS( "Continuity" ) ).PaneBorder( false )
+                              .MinSize( FromDIP( wxSize( 300, 200 ) ) )
+                              .BestSize( FromDIP( wxSize( 360, 420 ) ) )
+                              .FloatingSize( FromDIP( wxSize( 360, 600 ) ) )
+                              .CloseButton( true ) );
+        }
+    }
+
     m_auimgr.AddPane( m_gitCommitPane,
                       EDA_PANE()
                               .Name( GitCommitPaneName() )
@@ -463,6 +510,20 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
     // wx 3.3.3 turns a -1 min height into 1, and a legacy perspective restores one
     selectionFilterPane.min_size.y = m_selectionFilterPanel->GetBestSize().y;
+
+    // Continuity's panel shares Appearance's column: Appearance keeps room for its layer list and
+    // its display options, and the panel takes what is left.
+    if( wxAuiPaneInfo& continuityPane = m_auimgr.GetPane( wxS( "Continuity" ) ); continuityPane.IsOk() )
+    {
+        m_auimgr.GetPane( wxS( "LayersManager" ) ).min_size.y = FromDIP( 440 );
+        m_auimgr.GetPane( wxS( "LayersManager" ) ).dock_proportion = 3;
+        continuityPane.dock_proportion = 2;
+
+        // The mock's column is Appearance over the Work view: the Selection Filter makes way,
+        // and View, Panels shows it again.
+        selectionFilterPane.Hide();
+    }
+
     FinishAUIInitialization();
 
     if( aui_cfg.right_panel_width > 0 )
@@ -1394,6 +1455,28 @@ void PCB_EDIT_FRAME::setupUIConditions()
     mgr->SetConditions( PCB_ACTIONS::showConstraintsPanel, CHECK( constraintsPaneCond ) );
     mgr->SetConditions( PCB_ACTIONS::showDesignBlockPanel, CHECK( designBlockCond ) );
     mgr->SetConditions( ACTIONS::showGitCommitPane,        CHECK( gitCommitPaneCond ) );
+
+    // Continuity: the Selection Filter and Continuity's own panel, each shown or hidden alone.
+    auto paneShownCond =
+            [this]( const wxString& aName )
+            {
+                return [this, aName]( const SELECTION& )
+                       {
+                           const wxAuiPaneInfo& pane = m_auimgr.GetPane( aName );
+                           return pane.IsOk() && pane.IsShown();
+                       };
+            };
+
+    auto continuityDockedCond =
+            [this]( const SELECTION& )
+            {
+                return m_auimgr.GetPane( wxS( "Continuity" ) ).IsOk();
+            };
+
+    mgr->SetConditions( PCB_ACTIONS::showSelectionFilter,
+                        CHECK( paneShownCond( wxS( "SelectionFilter" ) ) ) );
+    mgr->SetConditions( PCB_ACTIONS::showContinuity,
+                        CHECK( paneShownCond( wxS( "Continuity" ) ) ).Enable( continuityDockedCond ) );
 
     mgr->SetConditions( PCB_ACTIONS::saveBoardAsDesignBlock,     ENABLE( hasElements ) );
     mgr->SetConditions( PCB_ACTIONS::saveSelectionAsDesignBlock, ENABLE( SELECTION_CONDITIONS::NotEmpty ) );

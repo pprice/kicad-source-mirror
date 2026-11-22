@@ -362,6 +362,9 @@ public:
 
     void ToggleNetInspector();
 
+    /// Continuity: shows or hides one docked pane by its name, as View, Panels does.
+    void TogglePane( const wxString& aName );
+
     void ToggleSearch();
 
     bool IsSearchPaneShown() { return m_auimgr.GetPane( SearchPaneName() ).IsShown(); }

@@ -2143,6 +2143,22 @@ TOOL_ACTION PCB_ACTIONS::showLayersManager( TOOL_ACTION_ARGS()
         .ToolbarState( TOOLBAR_STATE::TOGGLE )
         .Icon( BITMAPS::layers_manager ) );
 
+// Continuity: with its panel docked beside Appearance the Selection Filter starts hidden, and
+// these show either again.
+TOOL_ACTION PCB_ACTIONS::showSelectionFilter( TOOL_ACTION_ARGS()
+        .Name( "pcbnew.Control.showSelectionFilter" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Selection Filter" ) )
+        .Tooltip( _( "Show/hide the selection filter" ) )
+        .ToolbarState( TOOLBAR_STATE::TOGGLE ) );
+
+TOOL_ACTION PCB_ACTIONS::showContinuity( TOOL_ACTION_ARGS()
+        .Name( "pcbnew.Control.showContinuity" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Continuity" ) )
+        .Tooltip( _( "Show/hide Continuity's work panel" ) )
+        .ToolbarState( TOOLBAR_STATE::TOGGLE ) );
+
 TOOL_ACTION PCB_ACTIONS::showNetInspector( TOOL_ACTION_ARGS()
         .Name( "pcbnew.Control.showNetInspector" )
         .Scope( AS_GLOBAL )

@@ -517,6 +517,8 @@ public:
 
     static TOOL_ACTION showLayersManager;
     static TOOL_ACTION showNetInspector;
+    static TOOL_ACTION showSelectionFilter;
+    static TOOL_ACTION showContinuity;
     static TOOL_ACTION zonesManager;
 
     // Design Block management

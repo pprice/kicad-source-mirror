@@ -30,6 +30,7 @@
 
 #include <advanced_config.h>
 #include <kiid.h>
+#include <math/util.h>
 
 #include <widgets/ui_common.h>
 
@@ -71,9 +72,18 @@ void EDA_MSG_PANEL::updateFontSize()
 }
 
 
+// Continuity, as the mock lays it out: a small quiet label over a large value, with room above
+// and below. In units of the control font's height.
+static constexpr double LABEL_TOP = 0.45;
+static constexpr double VALUE_TOP = 1.4;
+static constexpr double PANEL_HEIGHT = 3.2;
+static constexpr double LABEL_SCALE = 0.9;
+static constexpr double VALUE_SCALE = 1.3;
+
+
 wxSize EDA_MSG_PANEL::DoGetBestSize() const
 {
-    return wxSize( wxDefaultCoord, 2 * m_fontSize.y + 0 );
+    return wxSize( wxDefaultCoord, KiROUND( PANEL_HEIGHT * m_fontSize.y ) );
 }
 
 
@@ -121,6 +131,17 @@ void EDA_MSG_PANEL::OnPaint( wxPaintEvent& aEvent )
     for( const MSG_PANEL_ITEM& item : m_Items )
         showItem( dc, item );
 
+    // A hairline between items, as the mock has.
+    dc.SetPen( wxPen( wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT ), 1 ) );
+    const int top = KiROUND( LABEL_TOP * m_fontSize.y );
+    const int bottom = GetClientSize().y - top;
+
+    for( size_t i = 1; i < m_Items.size(); ++i )
+    {
+        const int x = m_Items[i].m_X - m_fontSize.x;
+        dc.DrawLine( x, top, x, bottom );
+    }
+
     aEvent.Skip();
 }
 
@@ -139,8 +160,9 @@ void EDA_MSG_PANEL::updateItemPos( MSG_PANEL_ITEM& item )
 
     item.m_X = m_last_x;
 
-    item.m_UpperY = ( drawSize.y / 2 ) - m_fontSize.y;
-    item.m_LowerY = drawSize.y - m_fontSize.y;
+    item.m_UpperY = KiROUND( LABEL_TOP * m_fontSize.y );
+    item.m_LowerY = KiROUND( VALUE_TOP * m_fontSize.y );
+    wxUnusedVar( drawSize );
 
     // The label is drawn quiet and the value bold (showItem): each measured in its own face.
     wxClientDC dc( this );
@@ -154,8 +176,8 @@ void EDA_MSG_PANEL::updateItemPos( MSG_PANEL_ITEM& item )
 
     m_last_x += width;
 
-    // Add an extra space between texts for a better look:
-    m_last_x += m_fontSize.x;
+    // Room either side of the hairline between items.
+    m_last_x += 2 * m_fontSize.x;
 }
 
 
@@ -200,13 +222,13 @@ void EDA_MSG_PANEL::showItem( wxDC& aDC, const MSG_PANEL_ITEM& aItem )
 
 wxFont EDA_MSG_PANEL::labelFont()
 {
-    return KIUI::GetControlFont( this );
+    return KIUI::GetControlFont( this ).Scaled( LABEL_SCALE );
 }
 
 
 wxFont EDA_MSG_PANEL::valueFont()
 {
-    return KIUI::GetControlFont( this ).Bold();
+    return KIUI::GetControlFont( this ).Scaled( VALUE_SCALE ).Bold();
 }
 
 

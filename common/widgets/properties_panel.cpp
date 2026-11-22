@@ -153,6 +153,20 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     m_grid->SetCaptionTextColour( wxSystemSettings::GetColour( wxSYS_COLOUR_CAPTIONTEXT ) );
 #endif
 
+    // Continuity, as the mock has it (docs/kicad-look.md): one ground for the whole list, a
+    // group's name quiet on it rather than on a grey bar, and hairlines between the rows.
+    {
+        wxColour ground = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
+        wxColour rule = wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT );
+
+        m_grid->SetCaptionBackgroundColour( ground );
+        m_grid->SetCaptionTextColour( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
+        m_grid->SetMarginColour( ground );
+        m_grid->SetCellBackgroundColour( ground );
+        m_grid->SetEmptySpaceColour( ground );
+        m_grid->SetLineColour( rule );
+    }
+
     SetFont( KIUI::GetDockedPaneFont( this ) );
 
     SetSizer( mainSizer );

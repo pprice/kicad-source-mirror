@@ -111,7 +111,7 @@ PCBNEW_SETTINGS::PCBNEW_SETTINGS() :
             &m_AuiPanels.appearance_panel_tab, 0, 0, 2 ) );
 
     m_params.emplace_back( new PARAM<bool>( "aui.appearance_expand_layer_display",
-            &m_AuiPanels.appearance_expand_layer_display, false ) );
+            &m_AuiPanels.appearance_expand_layer_display, true ) );   // Continuity: open, as the mock
 
     m_params.emplace_back( new PARAM<bool>( "aui.appearance_expand_net_display",
             &m_AuiPanels.appearance_expand_net_display, false ) );
