@@ -20,8 +20,14 @@
 #include <limits>
 #include <set>
 
+#include <algorithm>
+#include <map>
+#include <string>
+
 #include <wx/bitmap.h>
+#include <wx/ffile.h>
 #include <wx/filename.h>
+#include <wx/tokenzr.h>
 #include <wx/log.h>
 #include <wx/mstream.h>
 #include <wx/stdpaths.h>
@@ -131,6 +137,26 @@ wxBitmap BITMAP_STORE::GetBitmap( BITMAPS aBitmapId, int aHeight )
 
 wxBitmapBundle BITMAP_STORE::GetBitmapBundle( BITMAPS aBitmapId, int aMinHeight )
 {
+    if( auto svg = m_svgIcons.find( aBitmapId ); svg != m_svgIcons.end() )
+    {
+        // A bundle's default size is its smallest bitmap's: keep KiCad's for this icon.
+        int smallest = std::numeric_limits<int>::max();
+
+        for( const BITMAP_INFO& info : m_bitmapInfoCache[aBitmapId] )
+        {
+            if( info.theme == m_theme && info.height > 0 && info.height >= aMinHeight )
+                smallest = std::min( smallest, static_cast<int>( info.height ) );
+        }
+
+        if( smallest == std::numeric_limits<int>::max() )
+            smallest = aMinHeight > 0 ? aMinHeight : 24;
+
+        wxBitmapBundle bundle = wxBitmapBundle::FromSVG( svg->second.c_str(), wxSize( smallest, smallest ) );
+
+        if( bundle.IsOk() )
+            return bundle;
+    }
+
     wxVector<wxBitmap> bmps;
 
     for( const BITMAP_INFO& info : m_bitmapInfoCache[aBitmapId] )
@@ -180,6 +206,15 @@ static wxImage resampleImage( const wxImage& aImg, int aWidth, int aHeight )
 
 wxBitmapBundle BITMAP_STORE::GetBitmapBundleDef( BITMAPS aBitmapId, int aDefHeight )
 {
+    // Drawn from the SVG at whatever size the window's scale asks for.
+    if( auto svg = m_svgIcons.find( aBitmapId ); svg != m_svgIcons.end() )
+    {
+        wxBitmapBundle bundle = wxBitmapBundle::FromSVG( svg->second.c_str(), wxSize( aDefHeight, aDefHeight ) );
+
+        if( bundle.IsOk() )
+            return bundle;
+    }
+
     wxVector<wxBitmap> bmps;
     std::set<int>      sizes;
     int                largestHeight = 0;
@@ -370,6 +405,9 @@ wxImage BITMAP_STORE::getImage( BITMAPS aBitmapId, int aHeight )
     const unsigned char* data = nullptr;
     long                 count;
 
+    if( wxImage svg; svgImage( aBitmapId, aHeight, svg ) )
+        return svg;
+
     if( aBitmapId == BITMAPS::dummy_item )
     {
         data = s_dummyItem;
@@ -418,6 +456,149 @@ void BITMAP_STORE::ThemeChanged()
 
     if( oldTheme != m_theme )
         m_bitmapNameCache.clear();
+
+    if( oldTheme != m_theme || !m_svgLoaded )
+        loadSvgIcons();
+}
+
+
+/// KiCad's name for an icon, its PNGs' file name less theme and size ("add_tracks").
+static wxString iconBaseName( const std::vector<BITMAP_INFO>& aInfos )
+{
+    for( const BITMAP_INFO& info : aInfos )
+    {
+        if( info.height <= 0 )
+            continue;
+
+        const wxString suffix = info.theme == BITMAP_INFO::THEME::DARK
+                                        ? wxString::Format( wxS( "_dark_%d.png" ), info.height )
+                                        : wxString::Format( wxS( "_%d.png" ), info.height );
+
+        const wxString filename = wxString::FromUTF8( info.filename );
+
+        if( filename.EndsWith( suffix ) )
+            return filename.Left( filename.length() - suffix.length() );
+    }
+
+    return wxEmptyString;
+}
+
+
+void BITMAP_STORE::loadSvgIcons()
+{
+    m_svgLoaded = true;
+    m_svgIcons.clear();
+    m_svgImageCache.clear();
+
+    const wxString folder = PATHS::GetStockDataPath() + wxS( "/resources/icons/continuity/" );
+    const wxString mapPath = folder + wxS( "icons.toml" );
+    wxString       mapText;
+
+    // Checked first: wxFFile reports a missing file in a dialog, and no icons is not an error.
+    if( !wxFileExists( mapPath ) )
+    {
+        wxLogTrace( traceBitmaps, "No Continuity icons in " + folder );
+        return;
+    }
+
+    wxFFile mapFile( mapPath, wxS( "rb" ) );
+
+    if( !mapFile.IsOpened() || !mapFile.ReadAll( &mapText, wxConvUTF8 ) )
+        return;
+
+    // Each line: kicad_name = "folder/file.svg"; a # starts a comment.
+    std::map<wxString, wxString> files;
+    wxStringTokenizer            lines( mapText, wxS( "\r\n" ) );
+
+    while( lines.HasMoreTokens() )
+    {
+        wxString line = lines.GetNextToken().BeforeFirst( '#' ).Trim().Trim( false );
+        wxString name = line.BeforeFirst( '=' ).Trim().Trim( false );
+        wxString file = line.AfterFirst( '=' ).Trim().Trim( false );
+
+        if( name.IsEmpty() || file.length() < 3 || !file.StartsWith( wxS( "\"" ) )
+            || !file.EndsWith( wxS( "\"" ) ) )
+        {
+            continue;
+        }
+
+        files[name] = file.Mid( 1, file.length() - 2 );
+    }
+
+    // The theme's ink: Continuity's on dark, its raised surface's on light.
+    const std::string               ink = m_theme == BITMAP_INFO::THEME::DARK ? "#f3f3ee" : "#1b1b1b";
+    const std::string               current = "currentColor";
+    std::map<wxString, std::string> texts;
+
+    for( const auto& [id, infos] : m_bitmapInfoCache )
+    {
+        auto it = files.find( iconBaseName( infos ) );
+
+        if( it == files.end() )
+            continue;
+
+        auto known = texts.find( it->second );
+
+        if( known == texts.end() )
+        {
+            const wxString svgPath = folder + it->second;
+            wxString       svgText;
+            std::string    svg;
+            wxFFile        svgFile;
+
+            if( wxFileExists( svgPath ) && svgFile.Open( svgPath, wxS( "rb" ) )
+                && svgFile.ReadAll( &svgText, wxConvUTF8 ) )
+            {
+                svg = svgText.ToStdString( wxConvUTF8 );
+
+                for( size_t at = svg.find( current ); at != std::string::npos; at = svg.find( current, at ) )
+                    svg.replace( at, current.size(), ink );
+            }
+            else
+            {
+                wxLogTrace( traceBitmaps, "Continuity icon " + it->second + " could not be read" );
+            }
+
+            known = texts.emplace( it->second, svg ).first;
+        }
+
+        if( !known->second.empty() )
+            m_svgIcons[id] = known->second;
+    }
+
+    wxLogTrace( traceBitmaps, wxString::Format( "%zu Continuity icons", m_svgIcons.size() ) );
+}
+
+
+bool BITMAP_STORE::svgImage( BITMAPS aBitmapId, int aHeight, wxImage& aImage )
+{
+    auto svg = m_svgIcons.find( aBitmapId );
+
+    if( svg == m_svgIcons.end() )
+        return false;
+
+    const int  height = aHeight > 0 ? aHeight : 24;
+    const auto key = std::make_pair( aBitmapId, height );
+
+    if( auto cached = m_svgImageCache.find( key ); cached != m_svgImageCache.end() )
+    {
+        aImage = cached->second;
+        return true;
+    }
+
+    wxBitmapBundle bundle = wxBitmapBundle::FromSVG( svg->second.c_str(), wxSize( height, height ) );
+
+    if( !bundle.IsOk() )
+        return false;
+
+    wxImage image = bundle.GetBitmap( wxSize( height, height ) ).ConvertToImage();
+
+    if( !image.IsOk() )
+        return false;
+
+    m_svgImageCache[key] = image;
+    aImage = image;
+    return true;
 }
 
 

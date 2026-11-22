@@ -21,9 +21,11 @@
 #define KICAD_BITMAP_STORE_H
 
 #include <memory>
+#include <string>
 #include <unordered_map>
 
 #include <wx/bmpbndl.h>
+#include <wx/image.h>
 
 #include <bitmaps/bitmap_info.h>
 #include <kicommon.h>
@@ -137,6 +139,22 @@ private:
     void buildBitmapInfoCache();
 
     std::unique_ptr<ASSET_ARCHIVE> m_archive;
+
+    /**
+     * Continuity's icons: each BITMAPS that resources/icons/continuity/icons.toml maps gets
+     * its SVG, with currentColor written as the theme's ink, and is drawn from it at every size
+     * KiCad asks for in place of its PNG.  Anything unmapped keeps its PNG.
+     */
+    void loadSvgIcons();
+
+    /// The icon drawn from its SVG at aHeight, or false where it has none.
+    bool svgImage( BITMAPS aBitmapId, int aHeight, wxImage& aImage );
+
+    std::unordered_map<BITMAPS, std::string> m_svgIcons;
+
+    std::unordered_map<std::pair<BITMAPS, int>, wxImage> m_svgImageCache;
+
+    bool m_svgLoaded = false;
 
     std::unordered_map<std::pair<BITMAPS, int>, wxString> m_bitmapNameCache;
 

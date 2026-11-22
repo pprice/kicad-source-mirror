@@ -176,3 +176,16 @@ file( COPY ${PROJECT_SOURCE_DIR}/resources/fonts/ DESTINATION ${PROJECT_BINARY_D
 install( DIRECTORY ${PROJECT_SOURCE_DIR}/resources/fonts/
     DESTINATION ${KICAD_DATA}/resources/fonts
     )
+
+# Continuity's icons (Lucide, ISC, and our own in its style), drawn by BITMAP_STORE in place of
+# the PNGs icons.toml names. Copied at configure time and again whenever they change.
+file( GLOB_RECURSE CONTINUITY_ICONS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/resources/icons/continuity/* )
+add_custom_target( continuity_icons ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_SOURCE_DIR}/resources/icons/continuity
+            ${PROJECT_BINARY_DIR}/resources/icons/continuity
+    SOURCES ${CONTINUITY_ICONS}
+    COMMENT "Copying Continuity's icons"
+    )
+install( DIRECTORY ${PROJECT_SOURCE_DIR}/resources/icons/continuity/
+    DESTINATION ${KICAD_DATA}/resources/icons/continuity
+    )
