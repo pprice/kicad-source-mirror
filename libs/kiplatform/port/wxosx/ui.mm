@@ -350,3 +350,15 @@ void KIPLATFORM::UI::RebindOnRealize( wxWindow* aWindow )
 {
     // An NSView keeps its identity when reparented
 }
+
+
+void KIPLATFORM::UI::FlattenDropDown( wxWindow* aCtrl )
+{
+    // AppKit's pop-up button is already flat
+}
+
+
+int KIPLATFORM::UI::FlatDropDownExtraWidth( wxWindow* aCtrl )
+{
+    return 0;
+}

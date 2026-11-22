@@ -19,6 +19,7 @@
 #include <wx/control.h>
 #include <wx/dc.h>
 #include <wx/propgrid/propgrid.h>
+#include <wx/settings.h>
 #include <properties/pg_cell_renderer.h>
 #include <properties/pg_properties.h>
 #include <widgets/color_swatch.h>
@@ -81,6 +82,10 @@ bool PG_CELL_RENDERER::Render( wxDC &aDC, const wxRect &aRect, const wxPropertyG
     text = wxControl::Ellipsize( text, aDC, wxELLIPSIZE_END, aRect.GetWidth() );
 
     int imageWidth = PreDrawCell( aDC, aRect, aGrid, cell, preDrawFlags );
+
+    // Continuity, as the mock has it: a property's name quiet, its value in full ink.
+    if( !( aFlags & Selected ) && !aProperty->IsCategory() )
+        aDC.SetTextForeground( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
 
     int imageOffset = aProperty->GetImageOffset( imageWidth );
 

@@ -121,6 +121,9 @@ public:
 
     void SetLabel( const wxString& aLabel ) override;
 
+    /// Continuity: a pane that is always open needs no header to open it by.
+    void ShowHeader( bool aShow );
+
     bool SetBackgroundColour( const wxColour& aColor ) override;
 
     bool InformFirstDirection( int aDirection, int aSize, int aAvailableOtherDir ) override;

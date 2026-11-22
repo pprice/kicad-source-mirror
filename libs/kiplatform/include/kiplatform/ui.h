@@ -364,6 +364,20 @@ namespace KIPLATFORM
          * keeps presenting to the destroyed one.  Wayland and other platforms need nothing.
          */
         void RebindOnRealize( wxWindow* aWindow );
+
+        /**
+         * Draw a toolbar's read-only drop-down flat: a rounded pill on the toolbar's ground with a
+         * hairline edge, its text (and item bitmap) and a small chevron (Continuity's look).
+         *
+         * On Windows the native combo box is painted over; other platforms draw their own.
+         */
+        void FlattenDropDown( wxWindow* aCtrl );
+
+        /**
+         * How much wider than its own best size a drop-down flattened by FlattenDropDown() needs
+         * to be for its padding and chevron; 0 for any other control and on other platforms.
+         */
+        int FlatDropDownExtraWidth( wxWindow* aCtrl );
     }
 }
 

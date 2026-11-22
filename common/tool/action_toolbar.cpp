@@ -566,6 +566,13 @@ void ACTION_TOOLBAR::Add( wxControl* aControl, const wxString& aLabel )
 {
     wxASSERT( aControl );
     m_controlIDs.push_back( aControl->GetId() );
+
+    // Continuity, as the mock has it: a drop-down on a toolbar is a flat pill, not a form's box.
+    KIPLATFORM::UI::FlattenDropDown( aControl );
+
+    if( int extra = KIPLATFORM::UI::FlatDropDownExtraWidth( aControl ) )
+        aControl->SetMinSize( wxSize( aControl->GetBestSize().x + extra, -1 ) );
+
     AddControl( aControl, aLabel );
 }
 
@@ -708,6 +715,7 @@ void ACTION_TOOLBAR::UpdateControlWidth( int aID )
     // Update the size the item has stored using the best size of the control
     control->InvalidateBestSize();
     wxSize bestSize = control->GetBestSize();
+    bestSize.x += KIPLATFORM::UI::FlatDropDownExtraWidth( control );   // Continuity: the pill's room
     item->SetMinSize( bestSize );
 
     // Update the sizer item sizes

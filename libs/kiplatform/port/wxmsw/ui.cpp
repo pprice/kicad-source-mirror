@@ -19,9 +19,22 @@
  */
 
 #include <windows.h>
+#include <commctrl.h>
+
+#ifdef _MSC_VER
+#pragma comment( lib, "comctl32.lib" )   // SetWindowSubclass, for FlattenDropDown()
+#endif
 
 #include <kiplatform/ui.h>
 
+#include <algorithm>
+
+#include <wx/bmpcbox.h>
+#include <wx/control.h>
+#include <wx/ctrlsub.h>
+#include <wx/dcgraph.h>
+#include <wx/dcmemory.h>
+#include <wx/settings.h>
 #include <wx/cursor.h>
 #include <wx/dataview.h>
 #include <wx/dialog.h>
@@ -366,4 +379,201 @@ void KIPLATFORM::UI::KeepAboveExternalRendering( wxWindow* aChild )
 void KIPLATFORM::UI::RebindOnRealize( wxWindow* aWindow )
 {
     // Win32 windows keep their HWND when reparented
+}
+
+
+namespace
+{
+const wchar_t FLAT_HOVER[] = L"KiCadFlatDropDownHover";
+
+
+/// The drop-down as Continuity's mock draws it, into a bitmap the size of the control.
+void paintFlatDropDown( HWND aHwnd, HDC aHdc, wxWindow* aCtrl )
+{
+    RECT rc;
+    ::GetClientRect( aHwnd, &rc );
+
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+
+    if( w <= 0 || h <= 0 )
+        return;
+
+    const bool enabled = aCtrl->IsEnabled();
+    const bool hover = ::GetPropW( aHwnd, FLAT_HOVER ) != nullptr;
+    const bool open = ::SendMessageW( aHwnd, CB_GETDROPPEDSTATE, 0, 0 ) != 0;
+
+    wxColour ground = aCtrl->GetParent() ? aCtrl->GetParent()->GetBackgroundColour()
+                                         : wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE );
+    wxColour fill = ground.ChangeLightness( 112 );
+    wxColour edge = ( hover || open ) ? wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT )
+                                      : wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT );
+    wxColour ink = enabled ? wxSystemSettings::GetColour( wxSYS_COLOUR_BTNTEXT )
+                           : wxSystemSettings::GetColour( wxSYS_COLOUR_GRAYTEXT );
+    wxColour quiet = wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT );
+
+    wxBitmap   buffer( w, h, 24 );
+    wxMemoryDC mdc( buffer );
+    mdc.SetBackground( wxBrush( ground ) );
+    mdc.Clear();
+
+    {
+        wxGCDC       gdc( mdc );
+        const double radius = aCtrl->FromDIP( 6 );
+
+        gdc.SetPen( wxPen( edge, 1 ) );
+        gdc.SetBrush( wxBrush( fill ) );
+        gdc.DrawRoundedRectangle( 0, 0, w, h, radius );
+
+        // The chevron, quiet, at the right.
+        const int cx = w - aCtrl->FromDIP( 14 );
+        const int cy = h / 2;
+        const int a = aCtrl->FromDIP( 4 );
+        const int b = aCtrl->FromDIP( 2 );
+        gdc.SetPen( wxPen( quiet, std::max( 1, aCtrl->FromDIP( 1 ) ) ) );
+        gdc.DrawLine( cx - a, cy - b, cx, cy + b );
+        gdc.DrawLine( cx, cy + b, cx + a, cy - b );
+    }
+
+    // What is chosen: a layer's swatch first where it has one, then its text.
+    int      x = aCtrl->FromDIP( 10 );
+    wxString text;
+
+    if( wxItemContainerImmutable* items = dynamic_cast<wxItemContainerImmutable*>( aCtrl ) )
+        text = items->GetStringSelection();
+
+    if( wxBitmapComboBox* bitmaps = dynamic_cast<wxBitmapComboBox*>( aCtrl ) )
+    {
+        int sel = bitmaps->GetSelection();
+
+        if( sel != wxNOT_FOUND )
+        {
+            wxBitmap bmp = bitmaps->GetItemBitmap( sel );
+
+            if( bmp.IsOk() )
+            {
+                mdc.DrawBitmap( bmp, x, ( h - bmp.GetHeight() ) / 2, true );
+                x += bmp.GetWidth() + aCtrl->FromDIP( 6 );
+            }
+        }
+    }
+
+    // In the control's own font, as Windows drew it: a memory DC would size a wxFont for 96 DPI.
+    HDC   mhdc = (HDC) mdc.GetHDC();
+    HFONT font = (HFONT) ::SendMessageW( aHwnd, WM_GETFONT, 0, 0 );
+    HGDIOBJ oldFont = font ? ::SelectObject( mhdc, font ) : nullptr;
+
+    ::SetBkMode( mhdc, TRANSPARENT );
+    ::SetTextColor( mhdc, RGB( ink.Red(), ink.Green(), ink.Blue() ) );
+
+    RECT textRect = { x, 0, w - aCtrl->FromDIP( 24 ), h };
+    ::DrawTextW( mhdc, text.wc_str(), -1, &textRect,
+                 DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS | DT_NOPREFIX );
+
+    if( oldFont )
+        ::SelectObject( mhdc, oldFont );
+
+    ::BitBlt( aHdc, 0, 0, w, h, mhdc, 0, 0, SRCCOPY );
+}
+
+
+LRESULT CALLBACK flatDropDownProc( HWND aHwnd, UINT aMsg, WPARAM aWParam, LPARAM aLParam,
+                                   UINT_PTR aId, DWORD_PTR aData )
+{
+    wxWindow* ctrl = reinterpret_cast<wxWindow*>( aData );
+
+    switch( aMsg )
+    {
+    case WM_NCDESTROY:
+        ::RemovePropW( aHwnd, FLAT_HOVER );
+        ::RemoveWindowSubclass( aHwnd, flatDropDownProc, aId );
+        break;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC         hdc = ::BeginPaint( aHwnd, &ps );
+        paintFlatDropDown( aHwnd, hdc, ctrl );
+        ::EndPaint( aHwnd, &ps );
+        return 0;
+    }
+
+    case WM_PRINTCLIENT:
+        paintFlatDropDown( aHwnd, (HDC) aWParam, ctrl );
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if( !::GetPropW( aHwnd, FLAT_HOVER ) )
+        {
+            ::SetPropW( aHwnd, FLAT_HOVER, (HANDLE) 1 );
+
+            TRACKMOUSEEVENT track = { sizeof( TRACKMOUSEEVENT ), TME_LEAVE, aHwnd, 0 };
+            ::TrackMouseEvent( &track );
+            ::InvalidateRect( aHwnd, nullptr, FALSE );
+        }
+
+        break;
+
+    case WM_MOUSELEAVE:
+        ::RemovePropW( aHwnd, FLAT_HOVER );
+        ::InvalidateRect( aHwnd, nullptr, FALSE );
+        break;
+
+    // The combo box paints its focus and its open state straight onto the screen, outside
+    // WM_PAINT: let it, then paint over it.
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_KEYDOWN:
+    case CB_SETCURSEL:
+    {
+        LRESULT result = ::DefSubclassProc( aHwnd, aMsg, aWParam, aLParam );
+        ::InvalidateRect( aHwnd, nullptr, FALSE );
+        ::UpdateWindow( aHwnd );
+        return result;
+    }
+
+    default:
+        break;
+    }
+
+    return ::DefSubclassProc( aHwnd, aMsg, aWParam, aLParam );
+}
+} // namespace
+
+
+void KIPLATFORM::UI::FlattenDropDown( wxWindow* aCtrl )
+{
+    if( !aCtrl || !aCtrl->GetHWND() )
+        return;
+
+    HWND hwnd = (HWND) aCtrl->GetHWND();
+
+    // Only a list that cannot be typed into: an editable combo box has a text field inside it.
+    if( ( ::GetWindowLongW( hwnd, GWL_STYLE ) & 0x3 ) != CBS_DROPDOWNLIST )
+        return;
+
+    ::SetWindowSubclass( hwnd, flatDropDownProc, 1, reinterpret_cast<DWORD_PTR>( aCtrl ) );
+    ::InvalidateRect( hwnd, nullptr, TRUE );
+}
+
+
+int KIPLATFORM::UI::FlatDropDownExtraWidth( wxWindow* aCtrl )
+{
+    if( !aCtrl || !aCtrl->GetHWND() )
+        return 0;
+
+    DWORD_PTR data = 0;
+
+    if( !::GetWindowSubclass( (HWND) aCtrl->GetHWND(), flatDropDownProc, 1, &data ) )
+        return 0;
+
+    // The pill's 10 before the text and 24 for the chevron, against Windows' own few pixels
+    // before the text and its arrow button.
+    return aCtrl->FromDIP( 16 );
 }

@@ -446,7 +446,7 @@ APPEARANCE_CONTROLS::APPEARANCE_CONTROLS( PCB_BASE_FRAME* aParent, wxWindow* aFo
     int screenHeight   = wxSystemSettings::GetMetric( wxSYS_SCREEN_Y );
     m_iconProvider     = new ROW_ICON_PROVIDER( KIUI::c_IndicatorSizeDIP, this );
     m_pointSize        = wxSystemSettings::GetFont( wxSYS_DEFAULT_GUI_FONT ).GetPointSize();
-    m_layerPanelColour = m_panelLayers->GetBackgroundColour().ChangeLightness( 110 );
+    m_layerPanelColour = m_panelLayers->GetBackgroundColour();   // Continuity: one ground, as the mock
     SetBorders( true, false, false, false );
 
     m_layersOuterSizer = new wxBoxSizer( wxVERTICAL );
@@ -461,11 +461,13 @@ APPEARANCE_CONTROLS::APPEARANCE_CONTROLS( PCB_BASE_FRAME* aParent, wxWindow* aFo
         item->SetBorder( FromDIP( 6 ) );
     }
 
-    // Continuity: the tabs and what is under them set in from the pane's edges, under its name.
+    // Continuity: the tabs reach the pane's edges, so a list's scroll bar stands flush with the
+    // pane's right edge (Phil: padded in, "the scrollbar is not flush - not good"). What is in a
+    // tab is set in by its own rows.
     if( wxSizerItem* item = m_sizerOuter->GetItem( m_notebook ) )
     {
-        item->SetFlag( wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM );
-        item->SetBorder( FromDIP( 8 ) );
+        item->SetFlag( wxEXPAND );
+        item->SetBorder( 0 );
     }
 
     m_objectsOuterSizer = new wxBoxSizer( wxVERTICAL );
@@ -654,8 +656,10 @@ void APPEARANCE_CONTROLS::createControls()
 
     // Create layer display options
     m_paneLayerDisplayOptions = new WX_COLLAPSIBLE_PANE( m_panelLayers, wxID_ANY, _( "Layer Display Options" ) );
-    m_paneLayerDisplayOptions->Collapse();
-    m_paneLayerDisplayOptions->SetBackgroundColour( m_notebook->GetThemeBackgroundColour() );
+    // Continuity, as the mock has it: the two choices that change how the whole board looks stand
+    // open under the layers, on the panel's own ground, with no header to open them by.
+    m_paneLayerDisplayOptions->Expand();
+    m_paneLayerDisplayOptions->ShowHeader( false );
 
     wxWindow* layerDisplayPane = m_paneLayerDisplayOptions->GetPane();
 
@@ -664,14 +668,15 @@ void APPEARANCE_CONTROLS::createControls()
 
     hotkey = PCB_ACTIONS::highContrastModeCycle.GetHotKey();
 
-    if( hotkey )
-        msg = wxString::Format( _( "Inactive layers (%s):" ), KeyNameFromKeyCode( hotkey ) );
-    else
-        msg = _( "Inactive layers:" );
-
-    m_inactiveLayersLabel = new wxStaticText( layerDisplayPane, wxID_ANY, msg );
+    m_inactiveLayersLabel = new wxStaticText( layerDisplayPane, wxID_ANY, _( "Inactive layers" ) );
     m_inactiveLayersLabel->SetFont( infoFont );
     m_inactiveLayersLabel->Wrap( -1 );
+
+    if( hotkey )
+    {
+        m_inactiveLayersLabel->SetToolTip( wxString::Format( _( "%s goes round them" ),
+                                                             KeyNameFromKeyCode( hotkey ) ) );
+    }
     layerDisplayOptionsSizer->Add( m_inactiveLayersLabel, 0, wxEXPAND | wxBOTTOM, FromDIP( 6 ) );
 
     wxBoxSizer* contrastModeSizer;
@@ -704,7 +709,7 @@ void APPEARANCE_CONTROLS::createControls()
 
     layerDisplayPane->SetSizer( layerDisplayOptionsSizer );
 
-    m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, FromDIP( 10 ) );
+    m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, FromDIP( 18 ) );
 
     m_paneLayerDisplayOptions->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
                                      [&]( wxCommandEvent& aEvent )
@@ -721,7 +726,6 @@ void APPEARANCE_CONTROLS::createControls()
     WX_COLLAPSIBLE_PANE* paneViews = new WX_COLLAPSIBLE_PANE( m_panelLayers, wxID_ANY,
                                                               _( "Presets, viewports and flip" ) );
     paneViews->Collapse();
-    paneViews->SetBackgroundColour( m_notebook->GetThemeBackgroundColour() );
 
     wxWindow*   viewsPane = paneViews->GetPane();
     wxBoxSizer* viewsSizer = new wxBoxSizer( wxVERTICAL );
@@ -749,7 +753,7 @@ void APPEARANCE_CONTROLS::createControls()
     viewsPane->Layout();
     viewsSizer->Fit( viewsPane );
 
-    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 6 ) );
+    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 14 ) );
 
     paneViews->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
                      [&]( wxCommandEvent& aEvent )
@@ -773,20 +777,20 @@ void APPEARANCE_CONTROLS::createControls()
 
     hotkey = PCB_ACTIONS::netColorModeCycle.GetHotKey();
 
+    msg = _( "Choose when to show net and netclass colors" );
+
     if( hotkey )
-        msg = wxString::Format( _( "Net colors (%s):" ), KeyNameFromKeyCode( hotkey ) );
-    else
-        msg = _( "Net colors:" );
+        msg += wxString::Format( _( " (%s goes round them)" ), KeyNameFromKeyCode( hotkey ) );
 
     // Continuity, as the mock has it: in the board editor the net colours sit with the inactive
     // layers on the Layers tab, the two choices that change how the whole board looks.
     wxWindow*   colourPane = m_isFpEditor ? netDisplayPane : layerDisplayPane;
     wxBoxSizer* colourSizer = m_isFpEditor ? netDisplayOptionsSizer : layerDisplayOptionsSizer;
 
-    m_txtNetDisplayTitle = new wxStaticText( colourPane, wxID_ANY, msg );
+    m_txtNetDisplayTitle = new wxStaticText( colourPane, wxID_ANY, _( "Net colors" ) );
     m_txtNetDisplayTitle->SetFont( infoFont );
     m_txtNetDisplayTitle->Wrap( -1 );
-    m_txtNetDisplayTitle->SetToolTip( _( "Choose when to show net and netclass colors" ) );
+    m_txtNetDisplayTitle->SetToolTip( msg );
 
     colourSizer->Add( m_txtNetDisplayTitle, 0, wxEXPAND | wxBOTTOM, FromDIP( 6 ) );
 
@@ -1309,7 +1313,7 @@ void APPEARANCE_CONTROLS::OnDarkModeToggle()
     // overriding some virtual method or responding to some wxWidgets event so that the parent
     // doesn't have to know what it contains.  But, that's not where we are, so... :shrug:
 
-    m_layerPanelColour = m_panelLayers->GetBackgroundColour().ChangeLightness( 110 );
+    m_layerPanelColour = m_panelLayers->GetBackgroundColour();   // Continuity: one ground, as the mock
 
     m_windowLayers->SetBackgroundColour( m_layerPanelColour );
 
@@ -1345,22 +1349,15 @@ void APPEARANCE_CONTROLS::OnLayerChanged()
             setting->ctl_text->SetForegroundColour( wxNullColour );
     }
 
-    wxChar r = m_layerPanelColour.Red();
-    wxChar g = m_layerPanelColour.Green();
-    wxChar b = m_layerPanelColour.Blue();
+    // Continuity, as the mock has it: the active layer's row a faint gold, 16% over the ground.
+    auto tint = []( unsigned char aGround, unsigned char aGold )
+                {
+                    return (unsigned char) KiROUND( aGround * 0.84 + aGold * 0.16 );
+                };
 
-    if( r < 240 || g < 240 || b < 240 )
-    {
-        r = wxChar( std::min( (int) r + 15, 255 ) );
-        g = wxChar( std::min( (int) g + 15, 255 ) );
-        b = wxChar( std::min( (int) b + 15, 255 ) );
-    }
-    else
-    {
-        r = wxChar( std::max( (int) r - 15, 0 ) );
-        g = wxChar( std::max( (int) g - 15, 0 ) );
-        b = wxChar( std::max( (int) b - 15, 0 ) );
-    }
+    unsigned char r = tint( m_layerPanelColour.Red(), 226 );
+    unsigned char g = tint( m_layerPanelColour.Green(), 184 );
+    unsigned char b = tint( m_layerPanelColour.Blue(), 77 );
 
     PCB_LAYER_ID current = m_frame->GetActiveLayer();
 
@@ -1373,7 +1370,7 @@ void APPEARANCE_CONTROLS::OnLayerChanged()
     APPEARANCE_SETTING* newSetting = m_layerSettingsMap[ current ];
 
     newSetting->ctl_panel->SetBackgroundColour( wxColour( r, g, b ) );
-    newSetting->ctl_indicator->SetIndicatorState( ROW_ICON_PROVIDER::STATE::ON );
+    // Continuity: no arrow beside it; the tint and the gold name say which layer is active.
 
     // Continuity: the active layer's name is gold, the colour of what is acted on.
     if( newSetting->ctl_text )
@@ -1820,7 +1817,7 @@ void APPEARANCE_CONTROLS::rebuildLayers()
                 // Continuity: rows with air between them, as the mock's list has, the marks
                 // spaced apart and the row set in from the pane's edge.
                 sizer->SetMinSize( 0, panel->FromDIP( 26 ) );
-                sizer->AddSpacer( panel->FromDIP( 6 ) );
+                sizer->AddSpacer( panel->FromDIP( 12 ) );
                 sizer->Add( indicator, 0, wxALIGN_CENTER_VERTICAL );
                 sizer->AddSpacer( panel->FromDIP( 6 ) );
                 sizer->Add( swatch, 0, wxALIGN_CENTER_VERTICAL );
@@ -2088,15 +2085,16 @@ void APPEARANCE_CONTROLS::rebuildLayers()
 
     m_paneLayerDisplayOptions->SetLabel( _( "Layer Display Options" ) );
 
+    // Continuity: the label plain, as the mock has it, and its hotkey in the tooltip.
     int hotkey = PCB_ACTIONS::highContrastModeCycle.GetHotKey();
-    wxString msg;
+
+    m_inactiveLayersLabel->SetLabel( _( "Inactive layers" ) );
 
     if( hotkey )
-        msg = wxString::Format( _( "Inactive layers (%s):" ), KeyNameFromKeyCode( hotkey ) );
-    else
-        msg = _( "Inactive layers:" );
-
-    m_inactiveLayersLabel->SetLabel( msg );
+    {
+        m_inactiveLayersLabel->SetToolTip( wxString::Format( _( "%s goes round them" ),
+                                                             KeyNameFromKeyCode( hotkey ) ) );
+    }
 
     m_rbHighContrastNormal->SetLabel( _( "Normal" ) );
     m_rbHighContrastNormal->SetToolTip( _( "Inactive layers will be shown in full color" ) );
@@ -2574,7 +2572,7 @@ void APPEARANCE_CONTROLS::rebuildObjects()
 
                 aSetting->ctl_text = label;
                 // Continuity: set in as the layer rows are, with air between rows.
-                m_objectsOuterSizer->Add( panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( 10 ) );
+                m_objectsOuterSizer->Add( panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( 18 ) );
 
                 if( !aSetting->can_control_opacity )
                     m_objectsOuterSizer->AddSpacer( FromDIP( 6 ) );
@@ -2833,13 +2831,14 @@ void APPEARANCE_CONTROLS::rebuildNets()
 
     hotkey = PCB_ACTIONS::netColorModeCycle.GetHotKey();
 
-    if( hotkey )
-        msg = wxString::Format( _( "Net colors (%s):" ), KeyNameFromKeyCode( hotkey ) );
-    else
-        msg = _( "Net colors:" );
+    msg = _( "Choose when to show net and netclass colors" );
 
-    m_txtNetDisplayTitle->SetLabel( msg );
-    m_txtNetDisplayTitle->SetToolTip( _( "Choose when to show net and netclass colors" ) );
+    if( hotkey )
+        msg += wxString::Format( _( " (%s goes round them)" ), KeyNameFromKeyCode( hotkey ) );
+
+    // Continuity: the label plain, as the mock has it, and its hotkey in the tooltip.
+    m_txtNetDisplayTitle->SetLabel( _( "Net colors" ) );
+    m_txtNetDisplayTitle->SetToolTip( msg );
 
     m_rbNetColorAll->SetLabel( _( "All" ) );
     m_rbNetColorAll->SetToolTip( _( "Net and netclass colors are shown on all copper items" ) );

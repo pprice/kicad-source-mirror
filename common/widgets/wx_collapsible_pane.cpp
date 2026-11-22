@@ -114,6 +114,14 @@ void WX_COLLAPSIBLE_PANE::SetLabel( const wxString& aLabel )
 }
 
 
+void WX_COLLAPSIBLE_PANE::ShowHeader( bool aShow )
+{
+    m_sizer->Show( m_header, aShow );
+    InvalidateBestSize();
+    Layout();
+}
+
+
 bool WX_COLLAPSIBLE_PANE::SetBackgroundColour( const wxColour& aColor )
 {
     m_header->SetBackgroundColour( aColor );

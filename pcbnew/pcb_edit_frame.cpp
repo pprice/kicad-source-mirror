@@ -352,8 +352,10 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                       .Bottom().Layer( 6 ) );
 
     // Columns; layers 1 - 3
+    // Continuity, as the mock has it: the view's switches down the window's own edge, outside
+    // Properties, between the top toolbar and the message panel.
     m_auimgr.AddPane( m_tbLeft, EDA_PANE().VToolbar().Name( wxS( "LeftToolbar" ) )
-                      .Left().Layer( 3 ) );
+                      .Left().Layer( 6 ) );
 
     m_auimgr.AddPane( m_tbRight, EDA_PANE().VToolbar().Name( wxS( "RightToolbar" ) )
                       .Right().Layer( 3 ) );
@@ -467,7 +469,10 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
             m_auimgr.AddPane( continuity, EDA_PANE().Name( wxS( "Continuity" ) )
                               .Right().Layer( 4 ).Position( 1 )
-                              .Caption( wxS( "Continuity" ) ).PaneBorder( false )
+                              // As the mock has it, no bar of its own: its tabs stand under
+                              // Appearance's options. View, Panels shows and hides it.
+                              .Caption( wxS( "Continuity" ) ).CaptionVisible( false )
+                              .PaneBorder( false )
                               .MinSize( FromDIP( wxSize( 300, 200 ) ) )
                               .BestSize( FromDIP( wxSize( 360, 420 ) ) )
                               .FloatingSize( FromDIP( wxSize( 360, 600 ) ) )
@@ -491,6 +496,10 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                               .Hide() );
 
     RestoreAuiLayout();
+
+    // Continuity: a layout saved before the left toolbar moved to the window's edge would put
+    // it back inside Properties; the toolbars are not the user's to move, so it goes outside.
+    m_auimgr.GetPane( wxS( "LeftToolbar" ) ).Left().Layer( 6 ).Row( 0 ).Position( 0 );
 
     // A saved layout brings its own minimum, so the one the panel needs is set again.
     m_auimgr.GetPane( GitCommitPaneName() ).min_size.x = m_gitCommitPane->GetMinDockWidth();
@@ -527,10 +536,17 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
     FinishAUIInitialization();
 
-    if( aui_cfg.right_panel_width > 0 )
+    // Continuity: with its panel docked the column is as wide as the mock's, near a quarter of the
+    // window, so a task's title reads on a line or two.
+    int rightWidth = aui_cfg.right_panel_width;
+
+    if( m_auimgr.GetPane( wxS( "Continuity" ) ).IsOk() )
+        rightWidth = std::max( rightWidth, FromDIP( 340 ) );
+
+    if( rightWidth > 0 )
     {
         wxAuiPaneInfo& layersManager = m_auimgr.GetPane( wxS( "LayersManager" ) );
-        SetAuiPaneSize( m_auimgr, layersManager, aui_cfg.right_panel_width, -1 );
+        SetAuiPaneSize( m_auimgr, layersManager, rightWidth, -1 );
 
         wxAuiPaneInfo& designBlocksPane = m_auimgr.GetPane( DesignBlocksPaneName() );
         SetAuiPaneSize( m_auimgr, designBlocksPane, aui_cfg.design_blocks_panel_docked_width, -1 );

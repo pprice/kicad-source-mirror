@@ -149,7 +149,8 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     // Room between rows, as the mock's list has: wx's widest spacing, a third of the font's height
     // above and below each.
     m_grid->SetVerticalSpacing( 3 );
-    mainSizer->Add( m_grid, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( 4 ) );
+    // Edge to edge, so its scroll bar stands flush with the pane's side.
+    mainSizer->Add( m_grid, 1, wxEXPAND );
 
     m_grid->SetCellDisabledTextColour( wxSystemSettings::GetColour( wxSYS_COLOUR_GRAYTEXT ) );
 

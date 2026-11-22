@@ -1324,3 +1324,15 @@ void KIPLATFORM::UI::RebindOnRealize( wxWindow* aWindow )
     g_signal_connect( widget, "realize", G_CALLBACK( rebindRealizedWindow ), aWindow );
 #endif
 }
+
+
+void KIPLATFORM::UI::FlattenDropDown( wxWindow* aCtrl )
+{
+    // GTK's combo box follows the theme, which draws it flat
+}
+
+
+int KIPLATFORM::UI::FlatDropDownExtraWidth( wxWindow* aCtrl )
+{
+    return 0;
+}
