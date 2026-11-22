@@ -525,8 +525,12 @@ void BITMAP_STORE::loadSvgIcons()
         files[name] = file.Mid( 1, file.length() - 2 );
     }
 
-    // The theme's ink: Continuity's on dark, its raised surface's on light.
+    // The theme's ink: Continuity's on dark, its raised surface's on light. A file named with
+    // "quiet:" before it is drawn in the quiet colour instead, for a mark that sits beside its
+    // row's name and should not outshine it (a layer's eye).
     const std::string               ink = m_theme == BITMAP_INFO::THEME::DARK ? "#f3f3ee" : "#1b1b1b";
+    const std::string               quietInk = m_theme == BITMAP_INFO::THEME::DARK ? "#a2a29d" : "#74746f";
+    const wxString                  quietPrefix = wxS( "quiet:" );
     const std::string               current = "currentColor";
     std::map<wxString, std::string> texts;
 
@@ -541,7 +545,9 @@ void BITMAP_STORE::loadSvgIcons()
 
         if( known == texts.end() )
         {
-            const wxString svgPath = folder + it->second;
+            wxString       file = it->second;
+            const bool     quiet = file.StartsWith( quietPrefix, &file );
+            const wxString svgPath = folder + file;
             wxString       svgText;
             std::string    svg;
             wxFFile        svgFile;
@@ -551,8 +557,10 @@ void BITMAP_STORE::loadSvgIcons()
             {
                 svg = svgText.ToStdString( wxConvUTF8 );
 
+                const std::string& colour = quiet ? quietInk : ink;
+
                 for( size_t at = svg.find( current ); at != std::string::npos; at = svg.find( current, at ) )
-                    svg.replace( at, current.size(), ink );
+                    svg.replace( at, current.size(), colour );
             }
             else
             {

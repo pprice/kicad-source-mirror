@@ -153,7 +153,9 @@ public:
         switch( which )
         {
         case wxMenuColour::StandardFg: return ink;
-        case wxMenuColour::StandardBg: return raised;
+        // wx paints only the menu bar with this (its drop-downs are the system's): on the
+        // window's black, or it is "just another grey line" (Phil, 2026-11-22).
+        case wxMenuColour::StandardBg: return surface;
         case wxMenuColour::DisabledFg: return edge;
         case wxMenuColour::HotBg:      return rule;
         default:                       return wxDarkModeSettings::GetMenuColour( which );

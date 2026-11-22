@@ -4,7 +4,8 @@
 # Lucide's grid in its style. Every file strokes and fills in currentColor,
 # which the loader replaces with the ink colour.
 #
-# One line per icon: kicad_name = "lucide/file.svg" or "ours/file.svg".
+# One line per icon: kicad_name = "lucide/file.svg" or "ours/file.svg";
+# "quiet:lucide/file.svg" draws it in the quiet colour instead of the ink.
 
 # Top: file
 new_generic = "lucide/file-plus.svg"
@@ -35,6 +36,10 @@ group = "lucide/group.svg"
 group_ungroup = "lucide/ungroup.svg"
 locked = "lucide/lock.svg"
 unlocked = "lucide/lock-open.svg"
+
+# Appearance: a layer's or object's eye, quiet beside its name
+visibility = "quiet:lucide/eye.svg"
+visibility_off = "quiet:lucide/eye-off.svg"
 
 # Top: other editors and checks
 module_editor = "ours/footprint-edit.svg"

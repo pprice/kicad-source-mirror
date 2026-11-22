@@ -378,6 +378,15 @@ const APPEARANCE_CONTROLS::APPEARANCE_SETTING APPEARANCE_CONTROLS::s_objectSetti
 };
 
 /// These GAL layers are shown in the Objects tab in the footprint editor
+// Continuity: where a layer row's swatch starts, in DIP from the pane's edge: level with the
+// pane's name above it ("Appearance", which WX_AUI_DOCK_ART::DrawCaption sets 12 in from its
+// caption, a little left of this panel) and the display options below the list.
+static constexpr int LAYER_ROW_INSET = 9;
+
+// The display options' own collapsible pane sets its content about 5 DIP in, so they sit at the
+// rows' inset with this border.
+static constexpr int OPTIONS_INSET = LAYER_ROW_INSET - 5;
+
 static std::set<int> s_allowedInFpEditor =
         {
             LAYER_TRACKS,
@@ -447,7 +456,13 @@ APPEARANCE_CONTROLS::APPEARANCE_CONTROLS( PCB_BASE_FRAME* aParent, wxWindow* aFo
     int screenHeight   = wxSystemSettings::GetMetric( wxSYS_SCREEN_Y );
     m_iconProvider     = new ROW_ICON_PROVIDER( KIUI::c_IndicatorSizeDIP, this );
     m_pointSize        = wxSystemSettings::GetFont( wxSYS_DEFAULT_GUI_FONT ).GetPointSize();
-    m_layerPanelColour = m_panelLayers->GetBackgroundColour();   // Continuity: one ground, as the mock
+    // Continuity: one ground, as the mock. Set on each page, or Windows paints the tab theme's
+    // grey under everything but the lists (#191919 under the layer options, 2026-11-22).
+    m_layerPanelColour = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
+
+    for( size_t page = 0; page < m_notebook->GetPageCount(); ++page )
+        m_notebook->GetPage( page )->SetBackgroundColour( m_layerPanelColour );
+
     SetBorders( true, false, false, false );
 
     m_layersOuterSizer = new wxBoxSizer( wxVERTICAL );
@@ -710,7 +725,8 @@ void APPEARANCE_CONTROLS::createControls()
 
     layerDisplayPane->SetSizer( layerDisplayOptionsSizer );
 
-    m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, FromDIP( 18 ) );
+    m_panelLayersSizer->AddSpacer( FromDIP( 18 ) );
+    m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( OPTIONS_INSET ) );
 
     m_paneLayerDisplayOptions->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
                                      [&]( wxCommandEvent& aEvent )
@@ -754,7 +770,9 @@ void APPEARANCE_CONTROLS::createControls()
     viewsPane->Layout();
     viewsSizer->Fit( viewsPane );
 
-    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 14 ) );
+    m_panelLayersSizer->AddSpacer( FromDIP( 14 ) );
+    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( OPTIONS_INSET ) );
+    m_panelLayersSizer->AddSpacer( FromDIP( 14 ) );
 
     paneViews->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
                      [&]( wxCommandEvent& aEvent )
@@ -769,7 +787,7 @@ void APPEARANCE_CONTROLS::createControls()
 
     m_paneNetDisplayOptions = new WX_COLLAPSIBLE_PANE( m_panelNetsAndClasses, wxID_ANY, _( "Net Display Options" ) );
     m_paneNetDisplayOptions->Collapse();
-    m_paneNetDisplayOptions->SetBackgroundColour( m_notebook->GetThemeBackgroundColour() );
+    m_paneNetDisplayOptions->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW ) );
 
     wxWindow* netDisplayPane = m_paneNetDisplayOptions->GetPane();
     wxBoxSizer* netDisplayOptionsSizer = new wxBoxSizer( wxVERTICAL );
@@ -1314,7 +1332,10 @@ void APPEARANCE_CONTROLS::OnDarkModeToggle()
     // overriding some virtual method or responding to some wxWidgets event so that the parent
     // doesn't have to know what it contains.  But, that's not where we are, so... :shrug:
 
-    m_layerPanelColour = m_panelLayers->GetBackgroundColour();   // Continuity: one ground, as the mock
+    m_layerPanelColour = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );   // Continuity: one ground
+
+    for( size_t page = 0; page < m_notebook->GetPageCount(); ++page )
+        m_notebook->GetPage( page )->SetBackgroundColour( m_layerPanelColour );
 
     m_windowLayers->SetBackgroundColour( m_layerPanelColour );
 
@@ -1760,28 +1781,19 @@ void APPEARANCE_CONTROLS::rebuildLayers()
     m_windowLayersSizerItem->SetFlag( m_windowLayersSizerItem->GetFlag() & ~wxTOP );
 #endif
 
-    // Continuity, as the mock has it: each row says quietly on its right what the layer is when its
-    // name does not, the standard name of a renamed copper layer ("In1.Cu" for "GND") and which
-    // side another is on.
-    auto layerNote =
-            []( int aLayer, const wxString& aLabel ) -> wxString
+    // Continuity: a row shows the layer's name once (Phil, 2026-11-22: "we dont need the layer
+    // names listed twice"). A renamed copper layer's standard name ("In1.Cu" for "GND") goes in
+    // its tooltip.
+    auto layerTip =
+            []( int aLayer, const wxString& aLabel, const wxString& aTooltip ) -> wxString
             {
                 PCB_LAYER_ID layer = ToLAYER_ID( aLayer );
                 wxString     standard = LSET::Name( layer );
 
-                if( IsCopperLayer( layer ) )
-                    return aLabel == standard ? wxString() : standard;
+                if( IsCopperLayer( layer ) && aLabel != standard )
+                    return aTooltip.IsEmpty() ? standard : aTooltip + wxS( " (" ) + standard + wxS( ")" );
 
-                if( layer == Edge_Cuts )
-                    return _( "outline" );
-
-                if( IsFrontLayer( layer ) )
-                    return _( "front" );
-
-                if( IsBackLayer( layer ) )
-                    return _( "back" );
-
-                return wxString();
+                return aTooltip;
             };
 
     auto appendLayer =
@@ -1813,28 +1825,20 @@ void APPEARANCE_CONTROLS::rebuildLayers()
 
                 wxStaticText* label = new wxStaticText( panel, layer, aSetting->label );
                 label->Wrap( -1 );
-                label->SetToolTip( aSetting->tooltip );
+                label->SetToolTip( layerTip( layer, aSetting->label, aSetting->tooltip ) );
 
-                // Continuity: rows with air between them, as the mock's list has, the marks
-                // spaced apart and the row set in from the pane's edge.
+                // Continuity: rows with air between them, as the mock's list has, each starting
+                // where the pane's other content does (Phil, 2026-11-22: "left align the
+                // layers"). The active row is marked by its tint, so the indicator takes no room.
+                indicator->Hide();
                 sizer->SetMinSize( 0, panel->FromDIP( 26 ) );
-                sizer->AddSpacer( panel->FromDIP( 12 ) );
-                sizer->Add( indicator, 0, wxALIGN_CENTER_VERTICAL );
-                sizer->AddSpacer( panel->FromDIP( 6 ) );
+                sizer->AddSpacer( panel->FromDIP( LAYER_ROW_INSET ) );
                 sizer->Add( swatch, 0, wxALIGN_CENTER_VERTICAL );
                 sizer->AddSpacer( panel->FromDIP( 10 ) );
                 sizer->Add( btn_visible, 0, wxALIGN_CENTER_VERTICAL );
                 sizer->AddSpacer( panel->FromDIP( 8 ) );
                 sizer->Add( label, 1, wxALIGN_CENTER_VERTICAL );
-
-                wxStaticText* note = new wxStaticText( panel, wxID_ANY, layerNote( layer, aSetting->label ),
-                                                       wxDefaultPosition, wxDefaultSize, 0, wxS( "layerNote" ) );
-                note->SetForegroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
-                note->SetFont( KIUI::GetSmallInfoFont( note ) );
-                sizer->Add( note, 0, wxALIGN_CENTER_VERTICAL );
                 sizer->AddSpacer( panel->FromDIP( 12 ) );
-                note->Bind( wxEVT_LEFT_DOWN, &APPEARANCE_CONTROLS::onLayerLeftClick, this );
-                note->Bind( wxEVT_RIGHT_DOWN, &APPEARANCE_CONTROLS::rightClickHandler, this );
 
                 m_layersOuterSizer->Add( panel, 0, wxEXPAND, 0 );
 
@@ -1882,15 +1886,7 @@ void APPEARANCE_CONTROLS::rebuildLayers()
                 aSetting->ctl_visibility->SetWindowID( layer );
                 aSetting->ctl_text->SetLabelText( aSetting->label );
                 aSetting->ctl_text->SetId( layer );
-                aSetting->ctl_text->SetToolTip( aSetting->tooltip );
-
-                // FindWindow, the row's own child: wx's FindWindowByName is static and searches
-                // every window, so it found the first row's note whichever row asked.
-                if( wxWindow* note = aSetting->ctl_panel->FindWindow( wxS( "layerNote" ) ) )
-                {
-                    static_cast<wxStaticText*>( note )->SetLabelText( layerNote( layer, aSetting->label ) );
-                    aSetting->ctl_panel->Layout();
-                }
+                aSetting->ctl_text->SetToolTip( layerTip( layer, aSetting->label, aSetting->tooltip ) );
             };
 
     // technical layers are shown in this order:
@@ -2621,7 +2617,7 @@ void APPEARANCE_CONTROLS::rebuildObjects()
 
                 aSetting->ctl_text = label;
                 // Continuity: set in as the layer rows are, with air between rows.
-                m_objectsOuterSizer->Add( panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( 18 ) );
+                m_objectsOuterSizer->Add( panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( LAYER_ROW_INSET ) );
 
                 if( !aSetting->can_control_opacity )
                     m_objectsOuterSizer->AddSpacer( FromDIP( 6 ) );
