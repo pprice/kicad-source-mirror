@@ -1,0 +1,159 @@
+# Continuity's icons for KiCad's PCB editor: each BITMAPS name and the SVG
+# drawn in its place. Paths are relative to this folder. lucide/ is Lucide
+# v0.469.0 (ISC, see lucide/LICENSE), files unchanged; ours/ is drawn on
+# Lucide's grid in its style. Every file strokes and fills in currentColor,
+# which the loader replaces with the ink colour.
+#
+# One line per icon: kicad_name = "lucide/file.svg" or "ours/file.svg".
+
+# Top: file
+new_generic = "lucide/file-plus.svg"
+directory_open = "lucide/folder-open.svg"
+save = "lucide/save.svg"
+options_board = "lucide/settings.svg"
+sheetset = "lucide/file-cog.svg"
+print_button = "lucide/printer.svg"
+plot = "lucide/file-output.svg"
+
+# Top: edit and view
+undo = "lucide/undo-2.svg"
+redo = "lucide/redo-2.svg"
+find = "lucide/search.svg"
+refresh = "lucide/refresh-cw.svg"
+zoom_in = "lucide/zoom-in.svg"
+zoom_out = "lucide/zoom-out.svg"
+zoom_fit_in_page = "lucide/maximize.svg"
+zoom_fit_to_objects = "lucide/focus.svg"
+zoom_area = "lucide/scan-search.svg"
+
+# Top: arrange
+rotate_ccw = "lucide/rotate-ccw.svg"
+rotate_cw = "lucide/rotate-cw.svg"
+mirror_v = "lucide/flip-vertical-2.svg"
+mirror_h = "lucide/flip-horizontal-2.svg"
+group = "lucide/group.svg"
+group_ungroup = "lucide/ungroup.svg"
+locked = "lucide/lock.svg"
+unlocked = "lucide/lock-open.svg"
+
+# Top: other editors and checks
+module_editor = "ours/footprint-edit.svg"
+library_browser = "lucide/library-big.svg"
+three_d = "lucide/box.svg"
+update_pcb_from_sch = "ours/schematic-to-board.svg"
+netlist = "lucide/file-input.svg"
+erc = "lucide/shield-check.svg"
+spreadsheet = "lucide/sheet.svg"
+icon_eeschema_24 = "ours/schematic.svg"
+
+# Top, second row: track width and layer pair
+auto_track_width = "ours/track-width-auto.svg"
+select_layer_pair = "lucide/layers-2.svg"
+
+# Left: grid and units
+grid = "ours/dot-grid.svg"
+grid_select = "ours/grid-spacing.svg"
+grid_select_axis = "ours/grid-origin.svg"
+grid_override = "ours/dot-grid-override.svg"
+unit_mm = "ours/unit-mm.svg"
+unit_inch = "ours/unit-inch.svg"
+unit_mil = "ours/unit-mil.svg"
+
+# Left: cursor and line modes
+cursor_shape = "ours/crosshair-small.svg"
+cursor_fullscreen = "ours/crosshair-full.svg"
+cursor_fullscreen45 = "ours/crosshair-45.svg"
+lines_any = "ours/line-any-angle.svg"
+lines90 = "ours/line-90.svg"
+hv45mode = "ours/line-45.svg"
+constraint_auto = "lucide/wand-sparkles.svg"
+
+# Left: what is shown
+general_ratsnest = "ours/ratsnest.svg"
+curved_ratsnest = "ours/ratsnest-curved.svg"
+contrast_mode = "lucide/contrast.svg"
+net_highlight = "lucide/highlighter.svg"
+show_zone = "ours/zone-filled.svg"
+show_zone_disable = "ours/zone-outline.svg"
+show_zone_outline_only = "ours/zone-fractured.svg"
+show_zone_triangulation = "ours/zone-triangulated.svg"
+pad_sketch = "ours/pad-sketch.svg"
+via_sketch = "ours/via-sketch.svg"
+showtrack = "ours/track-sketch.svg"
+gerbview_show_negative_objects = "lucide/square-dashed.svg"
+layers_manager = "lucide/layers.svg"
+tools = "lucide/sliders-horizontal.svg"
+
+# Right: select, place, route
+cursor = "lucide/mouse-pointer-2.svg"
+lasso = "lucide/lasso.svg"
+tool_ratsnest = "ours/ratsnest-local.svg"
+module = "ours/footprint.svg"
+add_tracks = "ours/track.svg"
+ps_diff_pair = "ours/diff-pair.svg"
+ps_tune_length = "ours/tune-length.svg"
+ps_diff_pair_tune_length = "ours/tune-pair-length.svg"
+ps_diff_pair_tune_phase = "ours/tune-skew.svg"
+tune_diff_pair_skew_legend = "ours/skew-show.svg"
+add_via = "ours/via.svg"
+add_via_stack = "ours/microvia-stack.svg"
+add_via_stitch = "ours/via-stitch-area.svg"
+
+# Right: zones
+add_zone = "ours/zone-filled.svg"
+fill_zone = "lucide/paint-bucket.svg"
+zone_unfill = "ours/paint-bucket-off.svg"
+add_keepout_area = "ours/rule-area.svg"
+
+# Right: drawing
+add_graphical_segments = "ours/line.svg"
+add_arc_center = "ours/arc-centre-start-end.svg"
+add_arc_start_end_mid = "ours/arc-three-point.svg"
+add_arc_start_end_center = "ours/arc-start-end-centre.svg"
+add_arc_tangent = "ours/arc-tangent.svg"
+add_arc_start_dir_end = "ours/arc-start-direction.svg"
+add_ellipse_arc = "ours/ellipse-arc.svg"
+add_rectangle = "lucide/rectangle-horizontal.svg"
+add_circle = "lucide/circle.svg"
+add_ellipse = "ours/ellipse.svg"
+add_graphical_polygon = "lucide/pentagon.svg"
+add_bezier = "ours/bezier.svg"
+image = "lucide/image.svg"
+text = "lucide/type.svg"
+add_textbox = "ours/text-box.svg"
+table = "lucide/table.svg"
+add_barcode = "lucide/barcode.svg"
+delete_cursor = "lucide/eraser.svg"
+
+# Right: constraints
+constraint_coincident = "ours/c-coincident.svg"
+constraint_point_on_line = "ours/c-point-on-line.svg"
+constraint_midpoint = "ours/c-midpoint.svg"
+constraint_symmetric = "ours/c-symmetric.svg"
+constraint_fixed_position = "ours/c-fixed-position.svg"
+constraint_parallel = "ours/c-parallel.svg"
+constraint_perpendicular = "ours/c-perpendicular.svg"
+constraint_collinear = "ours/c-collinear.svg"
+constraint_horizontal = "ours/c-horizontal.svg"
+constraint_vertical = "ours/c-vertical.svg"
+constraint_tangent = "ours/c-tangent.svg"
+constraint_equal_length = "ours/c-equal-length.svg"
+constraint_equal_radius = "ours/c-equal-radius.svg"
+constraint_concentric = "ours/c-concentric.svg"
+constraint_fixed_length = "ours/c-fixed-length.svg"
+constraint_fixed_radius = "ours/c-fixed-radius.svg"
+constraint_arc_angle = "ours/c-arc-angle.svg"
+constraint_angular_dimension = "ours/c-angle.svg"
+
+# Right: dimensions
+add_orthogonal_dimension = "ours/dim-orthogonal.svg"
+add_aligned_dimension = "ours/dim-aligned.svg"
+add_center_dimension = "ours/dim-centre.svg"
+add_radial_dimension = "ours/dim-radial.svg"
+add_leader = "ours/dim-leader.svg"
+
+# Right: origins, points, measuring
+set_origin = "ours/origin-axes.svg"
+add_point = "ours/point.svg"
+add_grid_item = "ours/sub-grid.svg"
+measurement = "lucide/ruler.svg"
