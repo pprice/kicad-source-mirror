@@ -124,6 +124,8 @@ private:
 
     HANDLER_RESULT<ClearancesResponse> handleGetClearances( const HANDLER_CONTEXT<GetClearances>& aCtx );
 
+    HANDLER_RESULT<RouteTrackResponse> handleRouteTrack( const HANDLER_CONTEXT<RouteTrack>& aCtx );
+
     HANDLER_RESULT<EditorStateResponse> handleGetEditorState( const HANDLER_CONTEXT<GetEditorState>& aCtx );
 
     HANDLER_RESULT<EditorStateResponse> handleTakeControl( const HANDLER_CONTEXT<TakeControl>& aCtx );

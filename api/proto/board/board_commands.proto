@@ -312,6 +312,99 @@ message TakeControl
 }
 
 /*
+ * Routing
+ */
+
+enum RouteMode
+{
+  RTM_UNKNOWN = 0;
+  // Walk round what is in the way (the default)
+  RTM_WALKAROUND = 1;
+  // Push other nets' tracks and vias aside
+  RTM_SHOVE = 2;
+  // Go straight; stop where the route would break a rule
+  RTM_STRICT = 3;
+}
+
+enum RouteCorners
+{
+  RTC_UNKNOWN = 0;
+  // Straight runs at 0, 45 and 90 degrees, mitred corners (the default)
+  RTC_45 = 1;
+  RTC_45_ROUNDED = 2;
+  RTC_90 = 3;
+  RTC_90_ROUNDED = 4;
+}
+
+message RouteWaypoint
+{
+  kiapi.common.types.Vector2 position = 1;
+
+  // Change to this copper layer here, through a via; BL_UNKNOWN stays on the layer
+  kiapi.board.types.BoardLayer layer = 2;
+}
+
+// Lays a track with KiCad's router, as a person routing in the editor does: from a pad, via or
+// track, through each waypoint in turn (fixing the route there, as a click does), to a pad, via or
+// track on the same net, or to the last waypoint.  The router keeps every clearance.  In the editor
+// the route is one undo step ("Route Track").
+// Returns RouteTrackResponse.  Nothing is laid unless the route reaches its end.
+message RouteTrack
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  // Where the route starts: a pad, via or track on the board
+  kiapi.common.types.KIID start = 2;
+
+  // Absent: the pad's or via's centre, or the track's end
+  kiapi.common.types.Vector2 start_position = 3;
+
+  // The layer the route starts on.  BL_UNKNOWN: the track's, else F_Cu if the start is on it,
+  // else B_Cu
+  kiapi.board.types.BoardLayer layer = 4;
+
+  repeated RouteWaypoint waypoints = 5;
+
+  // Where the route ends: a pad, via or track on the same net.  Absent: the last waypoint
+  kiapi.common.types.KIID end = 6;
+
+  // Absent: the end item's centre, or the end track's nearest end
+  kiapi.common.types.Vector2 end_position = 7;
+
+  RouteMode mode = 8;
+
+  RouteCorners corners = 9;
+
+  // Absent: what KiCad's rules give the net (its class, custom rules)
+  kiapi.common.types.Distance width = 10;
+  kiapi.common.types.Distance via_diameter = 11;
+  kiapi.common.types.Distance via_drill = 12;
+
+  // Work the route out and return it without laying it
+  bool dry_run = 13;
+}
+
+message RouteTrackResponse
+{
+  // The route reached its end and was laid (or, in a dry run, would be)
+  bool completed = 1;
+
+  // Why not, when it did not
+  string failure = 2;
+
+  // Where the route had reached when it stopped
+  kiapi.common.types.Vector2 reached = 3;
+
+  // Tracks, arcs and vias laid
+  repeated google.protobuf.Any added = 4;
+
+  // Other items moved to make way (shove), as they are after
+  repeated google.protobuf.Any modified = 5;
+
+  repeated kiapi.common.types.KIID removed = 6;
+}
+
+/*
  * Clearances
  */
 

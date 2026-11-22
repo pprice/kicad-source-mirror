@@ -64,6 +64,9 @@ static ROUTER* theRouter;
 
 ROUTER::ROUTER()
 {
+    // A router made for a while (as the API makes one to lay a route) hands the instance back
+    // to the editor's when it goes
+    m_previousInstance = theRouter;
     theRouter = this;
 
     m_state = IDLE;
@@ -92,7 +95,10 @@ ROUTER* ROUTER::GetInstance()
 ROUTER::~ROUTER()
 {
     ClearWorld();
-    theRouter = nullptr;
+
+    if( theRouter == this )
+        theRouter = m_previousInstance;
+
     delete m_logger;
 }
 

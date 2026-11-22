@@ -109,6 +109,12 @@
 #include <drc/drc_rule_parser.h>
 #include <widgets/appearance_controls.h>
 #include <widgets/wx_infobar.h>
+#include <router/pns_kicad_iface.h>
+#include <router/pns_node.h>
+#include <router/pns_placement_algo.h>
+#include <router/pns_router.h>
+#include <router/pns_routing_settings.h>
+#include <router/pns_sizes_settings.h>
 #include <widgets/report_severity.h>
 #include <drc/rule_editor/drc_re_rule_loader.h>
 #include <trace_helpers.h>
@@ -158,6 +164,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<GetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleGetNetColors );
     registerHandler<SetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleSetNetColors );
     registerHandler<GetClearances, ClearancesResponse>( &API_HANDLER_PCB::handleGetClearances );
+    registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
     registerHandler<GetEditorState, EditorStateResponse>( &API_HANDLER_PCB::handleGetEditorState );
     registerHandler<TakeControl, EditorStateResponse>( &API_HANDLER_PCB::handleTakeControl );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
@@ -1795,6 +1802,467 @@ HANDLER_RESULT<NetColorsResponse> API_HANDLER_PCB::handleSetNetColors(
     onModified();
 
     return packNetColors( colors );
+}
+
+
+namespace
+{
+
+/**
+ * The router's board interface for a route laid through the API.  It has no view to draw on and no
+ * tool to ask, and its commit is the handler's: the router stages its changes there, and the
+ * handler pushes them (or, in a dry run, reverts them) once the route is done.
+ */
+class API_ROUTER_IFACE : public PNS_KICAD_IFACE
+{
+public:
+    explicit API_ROUTER_IFACE( std::unique_ptr<BOARD_COMMIT> aCommit )
+    {
+        m_commit = std::move( aCommit );
+
+        // A debug decorator with nothing to draw on, for the router code that asks for one
+        SetView( nullptr );
+    }
+
+    void EraseView() override {}
+    bool IsAnyLayerVisible( const PNS_LAYER_RANGE& aLayer ) const override { return true; }
+    bool IsItemVisible( const PNS::ITEM* aItem ) const override { return true; }
+    void HideItem( PNS::ITEM* aItem ) override {}
+
+    void DisplayItem( const PNS::ITEM* aItem, int aClearance, bool aEdit = false,
+                      int aFlags = 0 ) override {}
+
+    void DisplayPathLine( const SHAPE_LINE_CHAIN& aLine, int aImportance ) override {}
+    void DisplayRatline( const SHAPE_LINE_CHAIN& aRatline, PNS::NET_HANDLE aNet ) override {}
+    EDA_UNITS GetUnits() const override { return EDA_UNITS::MM; }
+
+    void AddItem( PNS::ITEM* aItem ) override
+    {
+        PNS_KICAD_IFACE::AddItem( aItem );
+
+        if( BOARD_ITEM* parent = aItem->Parent() )
+            m_added.push_back( parent );
+    }
+
+    void RemoveItem( PNS::ITEM* aItem ) override
+    {
+        BOARD_ITEM* parent = aItem->Parent();
+        PNS_KICAD_IFACE::RemoveItem( aItem );
+
+        // A pad "removed" is one about to move, which a route never does
+        if( parent && !aItem->OfKind( PNS::ITEM::SOLID_T ) )
+            m_removed.push_back( parent->m_Uuid );
+    }
+
+    void UpdateItem( PNS::ITEM* aItem ) override
+    {
+        PNS_KICAD_IFACE::UpdateItem( aItem );
+
+        if( BOARD_ITEM* parent = aItem->Parent() )
+        {
+            if( std::find( m_modified.begin(), m_modified.end(), parent ) == m_modified.end() )
+                m_modified.push_back( parent );
+        }
+    }
+
+    // The handler pushes the commit itself
+    void Commit() override { m_committed = true; }
+
+    std::unique_ptr<BOARD_COMMIT> TakeCommit() { return std::move( m_commit ); }
+
+    bool                     m_committed = false;
+    std::vector<BOARD_ITEM*> m_added;
+    std::vector<BOARD_ITEM*> m_modified;
+    std::vector<KIID>        m_removed;
+};
+
+} // namespace
+
+
+HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
+        const HANDLER_CONTEXT<RouteTrack>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    auto badRequest =
+            []( const std::string& aMessage ) -> tl::unexpected<ApiResponseStatus>
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( aMessage );
+                return tl::unexpected( e );
+            };
+
+    const RouteTrack&      req = aCtx.Request;
+    BOARD*                 board = this->board();
+    BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
+
+    // An item a route can start or end on, and the point on it
+    auto anchor =
+            [&]( const kiapi::common::types::KIID& aId, const char* aWhat )
+                    -> HANDLER_RESULT<BOARD_CONNECTED_ITEM*>
+            {
+                std::optional<BOARD_ITEM*> item = getItemById( KIID( aId.value() ) );
+
+                if( !item )
+                    return badRequest( fmt::format( "{}: no item {} on the board", aWhat, aId.value() ) );
+
+                switch( ( *item )->Type() )
+                {
+                case PCB_PAD_T:
+                case PCB_VIA_T:
+                case PCB_TRACE_T:
+                case PCB_ARC_T:
+                    return static_cast<BOARD_CONNECTED_ITEM*>( *item );
+
+                default:
+                    return badRequest( fmt::format( "{}: {} is not a pad, via or track", aWhat,
+                                                    aId.value() ) );
+                }
+            };
+
+    auto pointOn =
+            []( BOARD_CONNECTED_ITEM* aItem, std::optional<VECTOR2I> aNear ) -> VECTOR2I
+            {
+                if( aItem->Type() == PCB_TRACE_T || aItem->Type() == PCB_ARC_T )
+                {
+                    PCB_TRACK* track = static_cast<PCB_TRACK*>( aItem );
+
+                    if( aNear && ( track->GetStart() - *aNear ).EuclideanNorm()
+                                         < ( track->GetEnd() - *aNear ).EuclideanNorm() )
+                    {
+                        return track->GetStart();
+                    }
+
+                    return track->GetEnd();
+                }
+
+                return aItem->GetPosition();
+            };
+
+    if( !req.has_start() )
+        return badRequest( "start is required" );
+
+    HANDLER_RESULT<BOARD_CONNECTED_ITEM*> start = anchor( req.start(), "start" );
+
+    if( !start )
+        return tl::unexpected( start.error() );
+
+    VECTOR2I startPos = req.has_start_position() ? UnpackVector2( req.start_position() )
+                                                 : pointOn( *start, std::nullopt );
+
+    PCB_LAYER_ID layer = FromProtoEnum<PCB_LAYER_ID>( req.layer() );
+
+    if( layer == UNDEFINED_LAYER )
+    {
+        if( ( *start )->Type() == PCB_TRACE_T || ( *start )->Type() == PCB_ARC_T )
+            layer = ( *start )->GetLayer();
+        else
+            layer = ( *start )->IsOnLayer( F_Cu ) ? F_Cu : B_Cu;
+    }
+
+    if( !IsCopperLayer( layer ) || !( *start )->IsOnLayer( layer ) )
+        return badRequest( "the start is not on the layer the route starts on" );
+
+    BOARD_CONNECTED_ITEM* end = nullptr;
+
+    if( req.has_end() )
+    {
+        HANDLER_RESULT<BOARD_CONNECTED_ITEM*> found = anchor( req.end(), "end" );
+
+        if( !found )
+            return tl::unexpected( found.error() );
+
+        end = *found;
+
+        if( end->GetNetCode() != ( *start )->GetNetCode() )
+            return badRequest( "the end is on another net from the start" );
+    }
+    else if( req.waypoints().empty() )
+    {
+        return badRequest( "a route needs an end or a waypoint" );
+    }
+
+    std::optional<VECTOR2I> lastWaypoint;
+
+    if( !req.waypoints().empty() )
+        lastWaypoint = UnpackVector2( req.waypoints().rbegin()->position() );
+
+    VECTOR2I endPos;
+
+    if( req.has_end_position() )
+        endPos = UnpackVector2( req.end_position() );
+    else if( end )
+        endPos = pointOn( end, lastWaypoint ? lastWaypoint : std::optional<VECTOR2I>( startPos ) );
+    else
+        endPos = *lastWaypoint;
+
+    // Headless, the board's rules engine has not been set up; the router reads its clearances there
+    if( !frame() )
+    {
+        if( !bds.m_DRCEngine )
+            bds.m_DRCEngine = std::make_shared<DRC_ENGINE>( board, &bds );
+
+        try
+        {
+            bds.m_DRCEngine->InitEngine( board->GetDesignRulesPath() );
+        }
+        catch( PARSE_ERROR& e )
+        {
+            return badRequest( fmt::format( "the custom rules do not compile: {}",
+                                            e.What().ToStdString() ) );
+        }
+    }
+
+    for( ZONE* zone : board->Zones() )
+        zone->CacheBoundingBox();
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+    {
+        for( ZONE* zone : footprint->Zones() )
+            zone->CacheBoundingBox();
+
+        footprint->BuildCourtyardCaches();
+    }
+
+    PNS::ROUTING_SETTINGS settings( nullptr, "" );
+
+    switch( req.mode() )
+    {
+    case RouteMode::RTM_SHOVE:  settings.SetMode( PNS::RM_Shove );          break;
+    case RouteMode::RTM_STRICT: settings.SetMode( PNS::RM_MarkObstacles );  break;
+    default:                    settings.SetMode( PNS::RM_Walkaround );     break;
+    }
+
+    switch( req.corners() )
+    {
+    case RouteCorners::RTC_45_ROUNDED: settings.SetCornerMode( DIRECTION_45::ROUNDED_45 ); break;
+    case RouteCorners::RTC_90:         settings.SetCornerMode( DIRECTION_45::MITERED_90 ); break;
+    case RouteCorners::RTC_90_ROUNDED: settings.SetCornerMode( DIRECTION_45::ROUNDED_90 ); break;
+    default:                           settings.SetCornerMode( DIRECTION_45::MITERED_45 ); break;
+    }
+
+    settings.SetAllowDRCViolations( false );
+
+    RouteTrackResponse            response;
+    std::unique_ptr<BOARD_COMMIT> commit( static_cast<BOARD_COMMIT*>( createCommit().release() ) );
+
+    {
+        API_ROUTER_IFACE iface( std::move( commit ) );
+        PNS::ROUTER      router;
+
+        iface.SetBoard( board );
+        router.SetInterface( &iface );
+        router.ClearWorld();
+        router.SyncWorld();
+        router.LoadSettings( &settings );
+        router.SetMode( PNS::PNS_MODE_ROUTE_SINGLE );
+
+        PNS::ITEM* startItem = router.GetWorld()->FindItemByParent( *start );
+        PNS::ITEM* endItem = end ? router.GetWorld()->FindItemByParent( end ) : nullptr;
+
+        if( !startItem || ( end && !endItem ) )
+            return badRequest( "the router does not know the start or end item" );
+
+        int pnsLayer = iface.GetPNSLayerFromBoardLayer( layer );
+
+        PNS::SIZES_SETTINGS sizes( router.Sizes() );
+        iface.SetStartLayerFromPCBNew( layer );
+        iface.ImportSizes( sizes, startItem, nullptr, startPos );
+
+        if( req.has_width() )
+        {
+            sizes.SetTrackWidth( req.width().value_nm() );
+            sizes.SetTrackWidthIsExplicit( true );
+            sizes.SetWidthSource( _( "API request" ) );
+        }
+
+        if( req.has_via_diameter() )
+            sizes.SetViaDiameter( req.via_diameter().value_nm() );
+
+        if( req.has_via_drill() )
+            sizes.SetViaDrill( req.via_drill().value_nm() );
+
+        sizes.SetViaType( VIATYPE::THROUGH );
+        router.UpdateSizes( sizes );
+
+        auto fail =
+                [&]( const wxString& aWhy )
+                {
+                    response.set_completed( false );
+
+                    wxString why = aWhy;
+
+                    if( !router.FailureReason().IsEmpty() )
+                        why << wxS( ": " ) << router.FailureReason();
+
+                    response.set_failure( why.ToUTF8() );
+
+                    if( router.RoutingInProgress() )
+                        PackVector2( *response.mutable_reached(), router.Placer()->CurrentEnd() );
+                    else
+                        PackVector2( *response.mutable_reached(), startPos );
+
+                    router.StopRouting();
+                };
+
+        // Moves the head to a point as a hand would, in small steps from where the route was last
+        // fixed (the router's posture follows the trail it is led along), and tries the other
+        // posture if that does not get there
+        auto moveTo =
+                [&]( const VECTOR2I& aP, PNS::ITEM* aItem ) -> bool
+                {
+                    const VECTOR2I from = router.Placer()->CurrentStart();
+                    const VECTOR2I d = aP - from;
+                    const int      step = pcbIUScale.mmToIU( 0.2 );
+                    const int      count = std::max( 1, KiROUND( d.EuclideanNorm() / step ) );
+
+                    for( int i = 1; i < count; ++i )
+                        router.Move( from + d * i / count, nullptr );
+
+                    router.Move( aP, aItem );
+
+                    if( router.Placer()->CurrentEnd() == aP )
+                        return true;
+
+                    router.FlipPosture();
+                    router.Move( aP, aItem );
+
+                    return router.Placer()->CurrentEnd() == aP;
+                };
+
+        if( !router.StartRouting( startPos, startItem, pnsLayer ) )
+        {
+            fail( wxS( "the route could not start there" ) );
+            commit = iface.TakeCommit();
+        }
+        else
+        {
+            bool stopped = false;
+            int  index = 0;
+
+            // With no end named, the last waypoint is the end
+            int fixedCount = req.waypoints_size();
+
+            if( !end && !req.has_end_position() )
+            {
+                fixedCount--;
+
+                if( req.waypoints( fixedCount ).layer() != kiapi::board::types::BL_UNKNOWN )
+                {
+                    fail( wxS( "the last waypoint ends the route, so it cannot change layer" ) );
+                    stopped = true;
+                    fixedCount = 0;
+                }
+            }
+
+            for( int i = 0; i < fixedCount; ++i )
+            {
+                const RouteWaypoint& waypoint = req.waypoints( i );
+                VECTOR2I     p = UnpackVector2( waypoint.position() );
+                PCB_LAYER_ID next = FromProtoEnum<PCB_LAYER_ID>( waypoint.layer() );
+                int          current = router.GetCurrentLayer();
+                bool         via = next != UNDEFINED_LAYER
+                                   && iface.GetPNSLayerFromBoardLayer( next ) != current;
+
+                if( next != UNDEFINED_LAYER && !IsCopperLayer( next ) )
+                {
+                    fail( wxString::Format( wxS( "waypoint %d: not a copper layer" ), index ) );
+                    stopped = true;
+                    break;
+                }
+
+                if( via )
+                {
+                    PNS::SIZES_SETTINGS viaSizes( router.Sizes() );
+                    viaSizes.ClearLayerPairs();
+                    viaSizes.AddLayerPair( current, iface.GetPNSLayerFromBoardLayer( next ) );
+                    router.UpdateSizes( viaSizes );
+
+                    if( !router.IsPlacingVia() )
+                        router.ToggleViaPlacement();
+                }
+
+                if( !moveTo( p, nullptr ) )
+                {
+                    fail( wxString::Format( wxS( "waypoint %d: the route could not reach it" ),
+                                            index ) );
+                    stopped = true;
+                    break;
+                }
+
+                router.FixRoute( p, nullptr, false, false );
+
+                if( router.Placer()->CurrentStart() != p )
+                {
+                    fail( wxString::Format( wxS( "waypoint %d: the route breaks a rule there" ),
+                                            index ) );
+                    stopped = true;
+                    break;
+                }
+
+                if( via )
+                    router.SwitchLayer( iface.GetPNSLayerFromBoardLayer( next ) );
+
+                index++;
+            }
+
+            if( !stopped )
+            {
+                // Onto an end item the router finds its own way into the pad, so only a free end
+                // has to be reached exactly
+                bool reached = moveTo( endPos, endItem ) || endItem;
+
+                if( !reached || !router.FixRoute( endPos, endItem, endItem == nullptr, false ) )
+                {
+                    fail( end ? wxS( "the route could not reach its end" )
+                              : wxS( "the route could not be finished at its end" ) );
+                    stopped = true;
+                }
+            }
+
+            if( !stopped )
+            {
+                router.CommitRouting();
+                response.set_completed( iface.m_committed );
+
+                if( !iface.m_committed )
+                    response.set_failure( "the router laid nothing" );
+
+                PackVector2( *response.mutable_reached(), endPos );
+
+                for( BOARD_ITEM* item : iface.m_added )
+                    item->Serialize( *response.add_added() );
+
+                for( BOARD_ITEM* item : iface.m_modified )
+                {
+                    if( std::find( iface.m_added.begin(), iface.m_added.end(), item ) == iface.m_added.end() )
+                        item->Serialize( *response.add_modified() );
+                }
+
+                for( const KIID& id : iface.m_removed )
+                    response.add_removed()->set_value( id.AsStdString() );
+            }
+
+            commit = iface.TakeCommit();
+        }
+    }
+
+    if( response.completed() && !req.dry_run() )
+    {
+        commit->Push( _( "Route Track" ) );
+        onModified();
+    }
+    else
+    {
+        commit->Revert();
+    }
+
+    return response;
 }
 
 
