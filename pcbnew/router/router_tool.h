@@ -28,6 +28,7 @@
 
 class PCB_SELECTION_TOOL;
 class PCB_VIA;
+class wxTimer;
 
 
 // A stacked drop armed during a route, expanded into a stack when the route finishes.
@@ -142,6 +143,13 @@ private:
     bool finishInteractive();
     void saveRouterDebugLog();
 
+    /**
+     * Beside the cursor, while a differential pair is routed: whether its lines are still to be
+     * evened (worked out once the cursor rests) or are left one-sided where no symmetric pair
+     * keeps clear.
+     */
+    void showPairStatus();
+
 private:
     std::shared_ptr<ACTION_MENU> m_diffPairMenu;
     std::shared_ptr<ACTION_MENU> m_trackViaMenu;
@@ -168,6 +176,9 @@ private:
 
     // Vias already expandable when the first drop was armed; the route did not create these.
     std::set<KIID> m_preRouteExpandableVias;
+
+    // Fires once the cursor rests, for a pair whose lines are still to be evened
+    std::unique_ptr<wxTimer> m_pairRestTimer;
 };
 
 #endif

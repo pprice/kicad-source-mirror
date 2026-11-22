@@ -22,7 +22,6 @@
 
 #include <functional>
 #include <optional>
-#include <utility>
 #include <vector>
 
 #include <math/vector2d.h>
@@ -46,6 +45,13 @@ struct DP_SYMMETRY_END
 
     /// At free track ends, the way the pair runs from them into the stretch.
     VECTOR2D out;
+
+    /**
+     * At free track ends, the tracks' width, where they may be laid at another size than the
+     * pair's (necked down out of a part's pins): the pair then joins them wherever their ends lie.
+     * 0 where the ends are the pair's own, at its gap.
+     */
+    int width = 0;
 };
 
 
@@ -73,15 +79,6 @@ struct DP_SYMMETRY_PARAMS
 
     /// Whether the two lines as drawn, each in runs of one width, keep clear of everything around them.
     std::function<bool( const std::vector<DP_SYMMETRY_PART> aParts[2] )> linesClear;
-
-    /**
-     * The width and gap the rules give the pair at a point of one of its lines (0 for P, 1 for N),
-     * for a track that wide there.  Where they give one end another size than the other, the pair
-     * takes each end's size and steps between them where the rule stops: necked down into a part
-     * whose pins are closer than the pair, and widened again on the way out.  Unset, the pair keeps
-     * its width and gap all the way.
-     */
-    std::function<std::pair<int, int>( int, const VECTOR2I&, int )> sizeAt;
 };
 
 
@@ -113,12 +110,10 @@ struct DP_SYMMETRY_RESULT
  * 1.4.1.1), Microchip (DS50003612B, section 3.2.1.2) and TI (SPRAAR7J, section 2.3) ask.  A bend
  * the next bend takes back within 2.54 mm is left to it.
  *
- * Free ends keep their points exactly, so a stretch joins the one before or after it.
- *
- * Where the rules give one end another width or gap (sizeAt), the lines take it there, up to
- * where the rule stops, and step to the pair's own size at 45 degrees as tracks of the narrower
- * width; where the pair would not keep clear at its own width so near, the narrow run goes on
- * further.  Each line comes back in runs of one width.
+ * Free ends keep their points exactly, so a stretch joins the one before or after it.  Where they
+ * are the ends of tracks laid at another size (a pair necked down out of a part's pins, laid by
+ * hand), the lines open or close from them to the pair's place at 45 degrees, as tracks of the
+ * narrower width, and take the pair's width there.  Each line comes back in runs of one width.
  *
  * @return the two lines, or nothing where no symmetric pair can be drawn there that keeps clear.
  */

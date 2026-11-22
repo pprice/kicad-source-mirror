@@ -210,6 +210,10 @@ struct END
 
     /// Where the lines have closed to their place beside the centre line.
     PT closed;
+
+    /// At free track ends narrower than the pair: their width, which the lines keep until they
+    /// have closed.  0 elsewhere.
+    double joined = 0.0;
 };
 
 
@@ -230,7 +234,9 @@ std::optional<END> makeEnd( const DP_SYMMETRY_END& aEnd, const PT& aToward, doub
 
     if( !aEnd.copper[0] || !aEnd.copper[1] )
     {
-        // Free track ends: the pair already runs there at its gap, and goes on as it was.
+        // Free track ends: the pair goes on the way they run.  Tracks laid at another size (a
+        // pair necked down out of a part's pins) are joined at their ends, the lines opening or
+        // closing to the pair's place at 45 degrees as tracks of the narrower width.
         const double size = aEnd.out.EuclideanNorm();
 
         if( size < HAIR )
@@ -238,11 +244,18 @@ std::optional<END> makeEnd( const DP_SYMMETRY_END& aEnd, const PT& aToward, doub
 
         e.out = aEnd.out * ( 1.0 / size );
 
-        if( std::abs( dot( e.out, along ) ) > 1e-3 || std::abs( apart / 2.0 - aHalf ) > 0.005 )
+        const double across = std::abs( apart / 2.0 - aHalf );
+        const double tracks = aEnd.width * MM_PER_NM;
+
+        if( std::abs( dot( e.out, along ) ) > 1e-3 || ( tracks <= 0.0 && across > 0.005 ) )
             return std::nullopt;
 
         e.lead = 0.0;
-        e.closed = e.mid;
+        e.closed = e.mid + e.out * ( across > 0.005 ? across : 0.0 );
+
+        if( across > 0.005 && tracks > 0.0 && tracks < aWidth - HAIR )
+            e.joined = tracks;
+
         return e;
     }
 
@@ -440,13 +453,17 @@ std::optional<PT> meet( const PT& p, const PT& u, const PT& q, const PT& v )
 /// they open at the other: the router's corners where its lines run side by side, the first and
 /// last straight moved to run out from the middle of each end's pads.
 std::optional<std::vector<PT>> centreRoute( const END& a, const END& b, const std::vector<MIDLINE>& aMids,
-                                            double aHalf )
+                                            double aHalf, bool aStraighten )
 {
     struct WAY
     {
         PT   at;
         PT   dir;
         bool mid;
+
+        /// Where the router's lines run side by side along it, for a stretch of its centre line
+        PT from;
+        PT to;
     };
 
     const PT bWay = b.out * -1.0;
@@ -461,12 +478,76 @@ std::optional<std::vector<PT>> centreRoute( const END& a, const END& b, const st
         last--;
 
     std::vector<WAY> ways;
-    ways.push_back( { a.mid, a.out, false } );
+    ways.push_back( { a.mid, a.out, false, a.mid, a.mid } );
 
     for( size_t k = first; k < last; k++ )
-        ways.push_back( { aMids[k].a, aMids[k].dir, true } );
+        ways.push_back( { aMids[k].a, aMids[k].dir, true, aMids[k].a, aMids[k].b } );
 
-    ways.push_back( { b.mid, bWay, false } );
+    ways.push_back( { b.mid, bWay, false, b.mid, b.mid } );
+
+    // The router's two lines may step aside at different places, where they do not run side by
+    // side: two stretches of the centre then run the same way, set apart.  A little apart, too
+    // little for the lines to step across at 45 degrees, they are one straight, the longer's;
+    // further, the centre steps across at 45 degrees between them.
+    const double tan22 = std::tan( std::atan( 1.0 ) / 2.0 );
+
+    for( size_t k = 0; k + 1 < ways.size(); )
+    {
+        const WAY u = ways[k];
+        const WAY v = ways[k + 1];
+
+        if( !u.mid || !v.mid || !sameWay( u.dir, v.dir ) )
+        {
+            k++;
+            continue;
+        }
+
+        const double apart = dot( beside( u.dir ), v.at - u.at );
+
+        if( std::abs( apart ) * std::sqrt( 2.0 ) < 2.0 * aHalf * tan22 + 0.01 )
+        {
+            WAY one = dist( u.from, u.to ) >= dist( v.from, v.to ) ? u : v;
+            one.from = u.from;
+            one.to = v.to;
+            ways[k] = one;
+            ways.erase( ways.begin() + k + 1 );
+            continue;
+        }
+
+        WAY step;
+        step.at = ( u.to + v.from ) * 0.5;
+        step.dir = ( u.dir + beside( u.dir ) * signOf( apart ) ) * ( 1.0 / std::sqrt( 2.0 ) );
+        step.mid = true;
+        step.from = u.to;
+        step.to = v.from;
+        ways.insert( ways.begin() + k + 1, step );
+        k += 2;
+    }
+
+    // A stretch the router took into an end at more than 45 degrees, after one that would come in
+    // at 45 or less (a dogleg onto tracks a little to one side), is left out: the stretch before
+    // it is moved over to meet the end at 45 degrees instead
+    if( aStraighten )
+    {
+        // Turning by more than 45 degrees, with a hair to spare
+        auto steep = []( const PT& u, const PT& v )
+        {
+            return dot( u, v ) < 0.7;
+        };
+
+        if( ways.size() >= 4 && ways[ways.size() - 2].mid && ways[ways.size() - 3].mid
+            && steep( ways[ways.size() - 2].dir, ways.back().dir )
+            && !steep( ways[ways.size() - 3].dir, ways.back().dir ) )
+        {
+            ways.erase( ways.end() - 2 );
+        }
+
+        if( ways.size() >= 4 && ways[1].mid && ways[2].mid && steep( ways[0].dir, ways[1].dir )
+            && !steep( ways[0].dir, ways[2].dir ) )
+        {
+            ways.erase( ways.begin() + 1 );
+        }
+    }
 
     if( ways.size() == 2 )
         return plainWay( a, b );
@@ -510,11 +591,11 @@ std::optional<std::vector<PT>> centreRoute( const END& a, const END& b, const st
         // A corner far from where the router's lines turn is no corner of theirs
         const double nearEnough = std::max( 1.0, 8.0 * aHalf );
 
-        if( ways[k].mid && dist( *corner, aMids[first + k - 1].b ) > nearEnough )
+        if( ( ways[k].mid && dist( *corner, ways[k].to ) > nearEnough )
+            || ( ways[k + 1].mid && dist( *corner, ways[k + 1].from ) > nearEnough ) )
+        {
             return std::nullopt;
-
-        if( ways[k + 1].mid && dist( *corner, aMids[first + k].a ) > nearEnough )
-            return std::nullopt;
+        }
 
         route.push_back( *corner );
     }
@@ -651,15 +732,6 @@ struct SIZE
 };
 
 
-/// A run of the centre line, measured along it from its start, where the pair has one size.
-struct ZONE
-{
-    double from = 0.0;
-    double to = 0.0;
-    SIZE   size;
-};
-
-
 /// The pair's whole centre line: from the middle of one end's pads to the other's.
 std::vector<PT> wholeOf( const END& a, const END& b, const std::vector<PT>& aRoute )
 {
@@ -676,35 +748,6 @@ std::vector<PT> wholeOf( const END& a, const END& b, const std::vector<PT>& aRou
 }
 
 
-/// How far along a line each of its points is.
-std::vector<double> runningLengths( const std::vector<PT>& aLine )
-{
-    std::vector<double> out = { 0.0 };
-
-    for( size_t k = 1; k < aLine.size(); k++ )
-        out.push_back( out.back() + dist( aLine[k - 1], aLine[k] ) );
-
-    return out;
-}
-
-
-/// The point aS along a line, and which of its straights it is on.
-PT pointAlong( const std::vector<PT>& aLine, const std::vector<double>& aAlong, double aS, size_t* aStraight = nullptr )
-{
-    size_t k = 0;
-
-    while( k + 2 < aLine.size() && aAlong[k + 1] < aS )
-        k++;
-
-    if( aStraight )
-        *aStraight = k;
-
-    const double length = aAlong[k + 1] - aAlong[k];
-    const double t = length > HAIR ? std::clamp( ( aS - aAlong[k] ) / length, 0.0, 1.0 ) : 0.0;
-    return aLine[k] + ( aLine[k + 1] - aLine[k] ) * t;
-}
-
-
 /// Which side of the centre line the P line keeps from end to end: +1 or -1, or 0 where its pads
 /// are on different sides at the two ends.
 double sideOf( const END& a, const END& b )
@@ -718,91 +761,52 @@ double sideOf( const END& a, const END& b )
 }
 
 
-/// The two lines set off from aWhole, a run of one size after another (aZones, in order, each
-/// beginning where or after the last ended).  Between two runs a line steps across at 45 degrees
-/// as a track of the narrower width.  aOwn is the pair's own size, which its bumps go on.
+/// The two lines set off from aWhole at aOwn, the pair's size.  Where an end joins tracks
+/// narrower than the pair, each line keeps their width as it opens or closes to its place beside
+/// the centre, and takes the pair's width there, at a sharp corner.
 std::optional<DRAWN> draw( const END& a, const END& b, const std::vector<PT>& aWhole, double aSide,
-                           const std::vector<ZONE>& aZones, const SIZE& aOwn )
+                           const SIZE& aOwn )
 {
-    if( aWhole.size() < 2 || aSide == 0.0 || aZones.empty() )
+    if( aWhole.size() < 2 || aSide == 0.0 )
         return std::nullopt;
-
-    const std::vector<double> along = runningLengths( aWhole );
 
     DRAWN drawn;
     drawn.by[0] = aSide * aOwn.half;
     drawn.by[1] = -aSide * aOwn.half;
-
-    for( const ZONE& zone : aZones )
-    {
-        if( std::none_of( drawn.halves.begin(), drawn.halves.end(),
-                          [&]( double h )
-                          {
-                              return std::abs( h - zone.size.half ) < HAIR;
-                          } ) )
-        {
-            drawn.halves.push_back( zone.size.half );
-        }
-    }
+    drawn.halves = { aOwn.half };
 
     for( int i = 0; i < 2; i++ )
     {
-        const double sideOfLine = i == 0 ? aSide : -aSide;
+        std::optional<std::vector<PT>> setOff = offset( aWhole, ( i == 0 ? aSide : -aSide ) * aOwn.half );
+
+        if( !setOff || setOff->size() < 2 )
+            return std::nullopt;
+
+        // Where each line has its place beside the centre, past the first end and before the last
+        const PT placed[2] = { ( *setOff )[1], ( *setOff )[setOff->size() - 2] };
 
         std::vector<PT> points = { a.pads[i], a.pads[i] + a.out * a.lead };
-
-        for( size_t z = 0; z < aZones.size(); z++ )
-        {
-            const ZONE&     zone = aZones[z];
-            const bool      first = z == 0;
-            const bool      last = z + 1 == aZones.size();
-            std::vector<PT> run;
-
-            run.push_back( first ? aWhole.front() : pointAlong( aWhole, along, zone.from ) );
-
-            for( size_t k = 1; k + 1 < aWhole.size(); k++ )
-            {
-                if( ( first || along[k] > zone.from + HAIR ) && ( last || along[k] < zone.to - HAIR ) )
-                    run.push_back( aWhole[k] );
-            }
-
-            run.push_back( last ? aWhole.back() : pointAlong( aWhole, along, zone.to ) );
-
-            std::optional<std::vector<PT>> setOff = offset( run, sideOfLine * zone.size.half );
-
-            if( !setOff || setOff->size() < 2 )
-                return std::nullopt;
-
-            // Where one run steps to the next, the wider run's end is where the narrower width
-            // takes over, on the step itself
-            if( !first )
-            {
-                const ZONE& before = aZones[z - 1];
-                const PT    from = setOff->front();
-                const PT    to = points.back();
-
-                drawn.sharp.push_back( from );
-                drawn.sharp.push_back( to );
-                drawn.partFrom[i].push_back( before.size.width > zone.size.width ? to : from );
-            }
-
-            drawn.partWidth[i].push_back( zone.size.width );
-            points.insert( points.end(), setOff->begin() + ( first ? 1 : 0 ), setOff->end() - ( last ? 1 : 0 ) );
-        }
-
+        points.insert( points.end(), setOff->begin() + 1, setOff->end() - 1 );
         points.push_back( b.pads[i] + b.out * b.lead );
         points.push_back( b.pads[i] );
-        drawn.lines[i] = plain( points, drawn.partFrom[i] );
 
-        // A step between two runs of the same width is no change of width
-        for( size_t k = drawn.partFrom[i].size(); k-- > 0; )
+        if( a.joined > 0.0 )
         {
-            if( std::abs( drawn.partWidth[i][k] - drawn.partWidth[i][k + 1] ) < HAIR )
-            {
-                drawn.partFrom[i].erase( drawn.partFrom[i].begin() + k );
-                drawn.partWidth[i].erase( drawn.partWidth[i].begin() + k + 1 );
-            }
+            drawn.partWidth[i].push_back( a.joined );
+            drawn.partFrom[i].push_back( placed[0] );
+            drawn.sharp.push_back( placed[0] );
         }
+
+        drawn.partWidth[i].push_back( aOwn.width );
+
+        if( b.joined > 0.0 )
+        {
+            drawn.partWidth[i].push_back( b.joined );
+            drawn.partFrom[i].push_back( placed[1] );
+            drawn.sharp.push_back( placed[1] );
+        }
+
+        drawn.lines[i] = plain( points, drawn.partFrom[i] );
     }
 
     drawn.centre = plain( aWhole );
@@ -1525,112 +1529,6 @@ std::vector<DP_SYMMETRY_PART> partsOf( const std::vector<PT>& aLine, const std::
 }
 
 
-/// How finely, and in what steps first, the place where a rule stops is looked for.
-constexpr double STEP_FOUND_TO = 0.005;
-constexpr double STEP_LOOKED = 0.1;
-
-
-/**
- * Where along aWhole the pair steps from aZone, the size the rules give it at one end (the start,
- * or the end where aAtEnd), to aOwn, its own size: the first place from that end where a track of
- * the wider size, at the wider size's place beside the centre, is given another size by the rules
- * (aInZone tells, d along the centre from that end).  Measured from aWhole's start: where the
- * wider size's lines end or begin, then where the narrower's do.  The step keeps off the end's
- * lead and the centre's corners by aMargin: a narrow end runs on narrow further, a wide end
- * stops short.  A narrow end runs on aPush further still, where the pair would not keep clear
- * at its own width so near.  Nothing where a wide end has no room.
- */
-std::optional<std::pair<double, double>> stepFrom( const std::vector<PT>& aWhole, bool aAtEnd, const SIZE& aZone,
-                                                   const SIZE& aOwn, double aMargin, double aPush,
-                                                   const std::function<bool( double )>& aInZone )
-{
-    const std::vector<double> along = runningLengths( aWhole );
-    const double              total = along.back();
-    const bool                narrow = aZone.width < aOwn.width
-                                       || ( aZone.width == aOwn.width && aZone.half < aOwn.half );
-    const double              across = std::abs( aZone.half - aOwn.half );
-
-    if( aWhole.size() < 3 )
-        return std::nullopt;
-
-    // The lead, from the pads to where the lines have closed, is the first straight from the end
-    const double lead = aAtEnd ? total - along[along.size() - 2] : along[1];
-    const double last = total - ( aAtEnd ? along[1] : total - along[along.size() - 2] );
-
-    double inside = lead;
-    double outside = -1.0;
-
-    for( double d = lead; d <= last; d += STEP_LOOKED )
-    {
-        if( !aInZone( d ) )
-        {
-            outside = d;
-            break;
-        }
-
-        inside = d;
-    }
-
-    if( outside < 0.0 )
-        return std::nullopt;
-
-    while( outside - inside > STEP_FOUND_TO && outside > lead )
-    {
-        const double mid = ( inside + outside ) / 2.0;
-
-        if( aInZone( mid ) )
-            inside = mid;
-        else
-            outside = mid;
-    }
-
-    // From the end: where the wider lines are, and the narrower, either side of the step
-    double wide = narrow ? outside + aPush : inside;
-    double thin = narrow ? wide - across : wide + across;
-
-    // Distances from the end of the corners of the centre line, the lead's own included
-    std::vector<double> corners;
-
-    for( size_t k = 1; k + 1 < aWhole.size(); k++ )
-        corners.push_back( aAtEnd ? total - along[k] : along[k] );
-
-    for( int tries = 0; tries < 64; tries++ )
-    {
-        const double lo = std::min( wide, thin ) - aMargin;
-        const double hi = std::max( wide, thin ) + aMargin;
-        double       shift = 0.0;
-
-        for( double c : corners )
-        {
-            if( c > lo && c < hi )
-                shift = narrow ? std::max( shift, c - lo ) : std::min( shift, c - hi );
-        }
-
-        if( lo < lead )
-            shift = narrow ? std::max( shift, lead - lo ) : -1e9;
-
-        if( shift == 0.0 )
-        {
-            if( hi > last )
-                return std::nullopt;
-
-            if( aAtEnd )
-                return std::make_pair( total - wide, total - thin );
-
-            return std::make_pair( wide, thin );
-        }
-
-        if( !narrow && std::min( wide, thin ) + shift - aMargin < lead )
-            return std::nullopt;
-
-        wide += shift;
-        thin += shift;
-    }
-
-    return std::nullopt;
-}
-
-
 /// The nearest the two lines' centres come to each other.
 double nearestBetween( const SHAPE_LINE_CHAIN& aP, const SHAPE_LINE_CHAIN& aN )
 {
@@ -1660,37 +1558,7 @@ std::optional<DP_SYMMETRY_RESULT> SymmetricPair( const SHAPE_LINE_CHAIN& aP, con
     const double half = ( width + gap ) / 2.0;
     const double round = aParams.radius * MM_PER_NM;
 
-    auto sizeOf = []( const std::pair<int, int>& aRule )
-    {
-        return SIZE{ aRule.first * MM_PER_NM, ( aRule.first + aRule.second ) * MM_PER_NM / 2.0 };
-    };
-
-    const std::pair<int, int> ownRule( aParams.width, aParams.gap );
-    const SIZE                own = sizeOf( ownRule );
-
-    // The size the rules give each end.  Where one end is given the pair's own size and the other
-    // another, the pair takes the other's size at that end, up to where the rule stops.
-    std::optional<std::pair<int, int>> endRule[2];
-
-    if( aParams.sizeAt )
-    {
-        auto ruleAt = [&]( const DP_SYMMETRY_END& aEnd )
-        {
-            const std::pair<int, int> p = aParams.sizeAt( 0, aEnd.anchor[0], aParams.width );
-            const std::pair<int, int> n = aParams.sizeAt( 1, aEnd.anchor[1], aParams.width );
-            return std::make_pair( std::min( p.first, n.first ), std::min( p.second, n.second ) );
-        };
-
-        const std::pair<int, int> atStart = ruleAt( aStart );
-        const std::pair<int, int> atEnd = ruleAt( aEnd );
-
-        if( atStart != atEnd && atStart == ownRule && atEnd.first > 0 && atEnd.second > 0 )
-            endRule[1] = atEnd;
-        else if( atStart != atEnd && atEnd == ownRule && atStart.first > 0 && atStart.second > 0 )
-            endRule[0] = atStart;
-    }
-
-    const SIZE endSize[2] = { endRule[0] ? sizeOf( *endRule[0] ) : own, endRule[1] ? sizeOf( *endRule[1] ) : own };
+    const SIZE own{ width, half };
 
     const std::vector<MIDLINE> mids = midlines( aP, aN, half );
 
@@ -1700,8 +1568,7 @@ std::optional<DP_SYMMETRY_RESULT> SymmetricPair( const SHAPE_LINE_CHAIN& aP, con
     const PT towardEnd = mids.empty() ? startMid : mids.back().a;
 
     // Where the pads are nearer than the pair, the lines meet them nearer too
-    const double closest = std::min( { 2.0 * half, 2.0 * endSize[0].half, 2.0 * endSize[1].half,
-                                       dist( toMm( aStart.anchor[0] ), toMm( aStart.anchor[1] ) ),
+    const double closest = std::min( { 2.0 * half, dist( toMm( aStart.anchor[0] ), toMm( aStart.anchor[1] ) ),
                                        dist( toMm( aEnd.anchor[0] ), toMm( aEnd.anchor[1] ) ) } );
 
     auto bumpClear = [&]( int aLine, const std::vector<PT>& aPoints )
@@ -1709,38 +1576,32 @@ std::optional<DP_SYMMETRY_RESULT> SymmetricPair( const SHAPE_LINE_CHAIN& aP, con
         return !aParams.bumpClear || aParams.bumpClear( aLine, chainOf( aPoints ) );
     };
 
-    // A step in size keeps clear of the centre line's arcs, and of its sharp corners by a hair
-    const double margin = round > 0.0 ? round : 0.02;
+    // The lines run on further from their pads until a way keeps clear; free ends have no lead
+    // to run on
+    const bool padded = aStart.copper[0] || aEnd.copper[0];
 
-    // The lines run on further from their pads until a way keeps clear; a necked end runs on
-    // narrow further, where the pair at its own width would not keep clear so near
-    const bool necked = ( endRule[0] && endSize[0].width < own.width ) || ( endRule[1] && endSize[1].width < own.width );
+    // The router's own corners into the ends are kept only where its doglegs into them, left out,
+    // keep clear no way
+    std::vector<std::pair<bool, double>> attempts;
 
-    std::vector<std::pair<double, double>> attempts;
-
-    for( double push : { 0.0, 0.5, 1.0, 2.0, 4.0 } )
+    for( bool straighten : { true, false } )
     {
         for( double extra : { 0.0, 1.0, 2.0, 4.0 } )
         {
-            if( push == 0.0 || necked )
-                attempts.emplace_back( push, extra );
+            if( extra == 0.0 || padded )
+                attempts.emplace_back( straighten, extra );
         }
     }
 
-    for( const std::pair<double, double>& attempt : attempts )
+    for( const auto& [straighten, extra] : attempts )
     {
-        const double push = attempt.first;
-        const double extra = attempt.second;
-
-        std::optional<END> a = makeEnd( aStart, towardStart, endSize[0].half, endSize[0].width,
-                                        extra * endSize[0].width );
-        std::optional<END> b = makeEnd( aEnd, towardEnd, endSize[1].half, endSize[1].width,
-                                        extra * endSize[1].width );
+        std::optional<END> a = makeEnd( aStart, towardStart, half, width, extra * width );
+        std::optional<END> b = makeEnd( aEnd, towardEnd, half, width, extra * width );
 
         if( !a || !b )
             return std::nullopt;
 
-        std::optional<std::vector<PT>> route = centreRoute( *a, *b, mids, half );
+        std::optional<std::vector<PT>> route = centreRoute( *a, *b, mids, half, straighten );
 
         if( !route )
             continue;
@@ -1751,77 +1612,7 @@ std::optional<DP_SYMMETRY_RESULT> SymmetricPair( const SHAPE_LINE_CHAIN& aP, con
         if( side == 0.0 )
             return std::nullopt;
 
-        // Each end's size, up to where its rule stops, then the pair's own
-        std::vector<ZONE> zones;
-        std::optional<std::pair<double, double>> steps[2];
-
-        for( int e = 0; e < 2; e++ )
-        {
-            if( !endRule[e] )
-                continue;
-
-            const SIZE& wider = endSize[e].width > own.width ? endSize[e] : own;
-
-            auto inZone = [&]( double d )
-            {
-                const std::vector<double> along = runningLengths( whole );
-                size_t                    k = 0;
-                const PT c = pointAlong( whole, along, e == 1 ? along.back() - d : d, &k );
-                const PT n = beside( unit( whole[k], whole[k + 1] ) );
-
-                for( int i = 0; i < 2; i++ )
-                {
-                    const PT at = c + n * ( ( i == 0 ? side : -side ) * wider.half );
-
-                    if( aParams.sizeAt( i, toNm( at ), KiROUND( wider.width / MM_PER_NM ) ) != *endRule[e] )
-                        return false;
-                }
-
-                return true;
-            };
-
-            steps[e] = stepFrom( whole, e == 1, endSize[e], own, margin, push, inZone );
-        }
-
-        // An end that cannot step back to the pair's own size where its rule stops keeps it
-        // all the way, as the router laid it
-        if( ( endRule[0] && !steps[0] ) || ( endRule[1] && !steps[1] ) )
-            continue;
-
-        auto stepAt = [&]( int e, bool aFirstOf )
-        {
-            // Along from the start: the zone at the start ends at its own size's line, the
-            // zone after begins at the other's
-            const auto& [wideAt, thinAt] = *steps[e];
-            const bool zoneNarrow = endSize[e].width < own.width
-                                    || ( endSize[e].width == own.width && endSize[e].half < own.half );
-            const double zoneLine = zoneNarrow ? thinAt : wideAt;
-            const double ownLine = zoneNarrow ? wideAt : thinAt;
-            return aFirstOf ? zoneLine : ownLine;
-        };
-
-        const double total = runningLengths( whole ).back();
-
-        if( steps[0] )
-            zones.push_back( { 0.0, stepAt( 0, true ), endSize[0] } );
-
-        zones.push_back( { steps[0] ? stepAt( 0, false ) : 0.0, steps[1] ? stepAt( 1, false ) : total, own } );
-
-        if( steps[1] )
-            zones.push_back( { stepAt( 1, true ), total, endSize[1] } );
-
-        bool ordered = true;
-
-        for( size_t z = 0; z < zones.size(); z++ )
-        {
-            if( zones[z].to < zones[z].from - HAIR || ( z > 0 && zones[z].from < zones[z - 1].to - HAIR ) )
-                ordered = false;
-        }
-
-        if( !ordered )
-            continue;
-
-        std::optional<DRAWN> drawn = draw( *a, *b, whole, side, zones, own );
+        std::optional<DRAWN> drawn = draw( *a, *b, whole, side, own );
 
         if( !drawn )
             continue;

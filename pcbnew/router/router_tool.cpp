@@ -23,6 +23,7 @@
 #include <wx/filedlg.h>
 #include <wx/filefn.h>
 #include <wx/hyperlink.h>
+#include <wx/timer.h>
 #include <wx/valnum.h>
 #include <advanced_config.h>
 #include <kiplatform/ui.h>
@@ -88,6 +89,7 @@ using namespace std::placeholders;
 #include "router_tool.h"
 #include "router_status_view_item.h"
 #include "pns_block_dragger.h"
+#include "pns_diff_pair_placer.h"
 #include "pns_router.h"
 #include "pns_itemset.h"
 #include "pns_line.h"
@@ -620,6 +622,58 @@ private:
 
 ROUTER_TOOL::~ROUTER_TOOL()
 {
+}
+
+
+void ROUTER_TOOL::showPairStatus()
+{
+    view()->ClearPreview();
+
+    auto* placer = dynamic_cast<PNS::DIFF_PAIR_PLACER*>( m_router->Placer() );
+
+    if( !placer || !m_router->RoutingInProgress() )
+        return;
+
+    using SYMMETRY = PNS::DIFF_PAIR_PLACER::SYMMETRY;
+
+    wxString message;
+    wxString hint;
+
+    switch( placer->Symmetry() )
+    {
+    case SYMMETRY::WAITING:
+        message = _( "Evening the pair's lines..." );
+        hint = _( "(Once the cursor rests.)" );
+
+        if( !m_pairRestTimer )
+        {
+            m_pairRestTimer = std::make_unique<wxTimer>();
+            m_pairRestTimer->Bind( wxEVT_TIMER,
+                                   [this]( wxTimerEvent& )
+                                   {
+                                       if( m_router->RoutingInProgress() )
+                                           m_toolMgr->PostAction( ACTIONS::refreshPreview );
+                                   } );
+        }
+
+        // Started again on every move, so it fires only once the cursor rests
+        m_pairRestTimer->StartOnce( 300 );
+        break;
+
+    case SYMMETRY::ONE_SIDED:
+        message = _( "Pair left one-sided here." );
+        hint = _( "(No symmetric shape keeps clear.)" );
+        break;
+
+    default:
+        return;
+    }
+
+    ROUTER_STATUS_VIEW_ITEM* statusItem = new ROUTER_STATUS_VIEW_ITEM();
+    statusItem->SetMessage( message );
+    statusItem->SetHint( hint );
+    statusItem->SetPosition( frame()->GetToolManager()->GetMousePosition() );
+    view()->AddToPreview( statusItem );
 }
 
 
@@ -1933,6 +1987,7 @@ void ROUTER_TOOL::performRouting( VECTOR2D aStartPosition )
         {
             updateEndItem( *evt );
             m_router->Move( m_endSnapPoint, m_endItem );
+            showPairStatus();
         }
         else if( evt->IsAction( &PCB_ACTIONS::routerUndoLastSegment )
                     || evt->IsAction( &ACTIONS::doDelete )
@@ -2030,6 +2085,7 @@ void ROUTER_TOOL::performRouting( VECTOR2D aStartPosition )
 
             updateEndItem( *evt );
             m_router->Move( m_endSnapPoint, m_endItem );
+            showPairStatus();
             m_startItem = nullptr;
         }
         else if( evt->IsAction( &ACT_PlaceViaStack ) )
@@ -2108,6 +2164,11 @@ void ROUTER_TOOL::performRouting( VECTOR2D aStartPosition )
             evt->SetPassEvent();
         }
     }
+
+    if( m_pairRestTimer )
+        m_pairRestTimer->Stop();
+
+    view()->ClearPreview();
 
     m_router->CommitRouting();
     // Reset to normal for next route

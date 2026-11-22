@@ -34,6 +34,9 @@
 #include <base_units.h>
 #include <geometry/shape_circle.h>
 
+#include <chrono>
+#include <climits>
+
 namespace PNS {
 
 
@@ -403,17 +406,88 @@ bool DIFF_PAIR_PLACER::route( const VECTOR2I& aP )
 }
 
 
-void DIFF_PAIR_PLACER::makeSymmetric()
+/**
+ * How much longer the P tracks are than the N tracks, each followed from aP or aN to where it
+ * stops (a pad, a via, a fork): what a pair going on from tracks already there takes over.
+ */
+static double skewOfTracks( NODE* aNode, ITEM* aP, ITEM* aN )
 {
-    const SHAPE_LINE_CHAIN& p = m_currentTrace.CP();
-    const SHAPE_LINE_CHAIN& n = m_currentTrace.CN();
+    const int trackMask = ITEM::SEGMENT_T | ITEM::ARC_T;
 
-    if( !m_prevPair || p.PointCount() < 2 || n.PointCount() < 2 || p.ArcCount() || n.ArcCount() )
-        return;
+    if( !aNode || !aP || !aN || !aP->OfKind( trackMask ) || !aN->OfKind( trackMask ) )
+        return 0.0;
+
+    const LINE p = aNode->AssembleLine( static_cast<LINKED_ITEM*>( aP ) );
+    const LINE n = aNode->AssembleLine( static_cast<LINKED_ITEM*>( aN ) );
+
+    return (double) p.CLine().Length() - (double) n.CLine().Length();
+}
+
+
+/// A line with each of its arcs taken back to the corner it rounds, where its straights meet.
+static SHAPE_LINE_CHAIN cornersOf( const SHAPE_LINE_CHAIN& aLine )
+{
+    if( !aLine.ArcCount() || aLine.PointCount() < 2 )
+        return aLine;
+
+    SHAPE_LINE_CHAIN out;
+    out.Append( aLine.CPoint( 0 ) );
+
+    ssize_t lastArc = -1;
+
+    for( int k = 0; k < aLine.SegmentCount(); k++ )
+    {
+        if( !aLine.IsArcSegment( k ) )
+        {
+            out.Append( aLine.CPoint( k + 1 ) );
+            continue;
+        }
+
+        const ssize_t arcIndex = aLine.ArcIndex( k );
+
+        if( arcIndex == lastArc )
+            continue;
+
+        lastArc = arcIndex;
+
+        const SHAPE_ARC& arc = aLine.Arc( arcIndex );
+        const VECTOR2D   centre = arc.GetCenter();
+        const VECTOR2D   from = arc.GetP0();
+        const VECTOR2D   to = arc.GetP1();
+        const VECTOR2D   along0 = ( from - centre ).Perpendicular();
+        const VECTOR2D   along1 = ( to - centre ).Perpendicular();
+        const double     turn = along0.Cross( along1 );
+
+        // Each end's tangent, square to its radius: where they cross is the corner
+        if( std::abs( turn ) > 1e-9 * along0.EuclideanNorm() * along1.EuclideanNorm() )
+        {
+            const double   s = ( to - from ).Cross( along1 ) / turn;
+            const VECTOR2D corner = from + along0 * s;
+            out.Append( VECTOR2I( KiROUND( corner.x ), KiROUND( corner.y ) ) );
+        }
+
+        out.Append( arc.GetP1() );
+    }
+
+    return out;
+}
+
+
+DIFF_PAIR_PLACER::SYMMETRY DIFF_PAIR_PLACER::makeSymmetric( bool aMayWait )
+{
+    m_symmetricParts[0].clear();
+    m_symmetricParts[1].clear();
+
+    // Where the router rounds its corners, the pass works from the corners it rounds
+    const SHAPE_LINE_CHAIN p = cornersOf( m_currentTrace.CP() );
+    const SHAPE_LINE_CHAIN n = cornersOf( m_currentTrace.CN() );
+
+    if( !m_prevPair || p.PointCount() < 2 || n.PointCount() < 2 )
+        return SYMMETRY::NONE;
 
     // A trace whose last segment is held back for the next click would lose its symmetry there
     if( !m_snapOnTarget && !m_currentTrace.EndsWithVias() && !Settings().GetFixAllSegments() )
-        return;
+        return SYMMETRY::NONE;
 
     const int pvMask = ITEM::SOLID_T | ITEM::VIA_T;
 
@@ -440,7 +514,7 @@ void DIFF_PAIR_PLACER::makeSymmetric()
     const ITEM* startN = m_prevPair->PrimN();
 
     if( !startP || !startN || p.CPoint( 0 ) != start.anchor[0] || n.CPoint( 0 ) != start.anchor[1] )
-        return;
+        return SYMMETRY::NONE;
 
     if( startP->OfKind( pvMask ) && startN->OfKind( pvMask ) )
     {
@@ -448,20 +522,25 @@ void DIFF_PAIR_PLACER::makeSymmetric()
         start.copper[1] = startN->Shape( m_currentLayer );
 
         if( !start.copper[0] || !start.copper[1] )
-            return;
+            return SYMMETRY::NONE;
     }
     else if( std::optional<VECTOR2D> out = alongTrack( startP, start.anchor[0] ) )
     {
         start.out = *out;
+        start.width = std::min( static_cast<const SEGMENT*>( startP )->Width(),
+                                startN->OfKind( ITEM::SEGMENT_T ) ? static_cast<const SEGMENT*>( startN )->Width()
+                                                                  : INT_MAX );
     }
     else
     {
-        return;
+        return SYMMETRY::NONE;
     }
 
     DP_SYMMETRY_END end;
     end.anchor[0] = p.CLastPoint();
     end.anchor[1] = n.CLastPoint();
+
+    double endSkew = 0.0;
 
     SHAPE_CIRCLE viaCopper[2];
 
@@ -478,12 +557,11 @@ void DIFF_PAIR_PLACER::makeSymmetric()
         const ITEM* endP = m_target->PrimP();
         const ITEM* endN = m_target->PrimN();
 
-        // A pair wider than the pins it meets stops short of them, at a gateway beside them;
-        // drawn again from its pads it meets them, necked down where a rule asks
+        // A pair wider than the pins or tracks it meets stops short of them, at a gateway beside
+        // them; drawn again from their ends it meets them
         const int nearby = 2 * ( m_sizes.DiffPairWidth() + m_sizes.DiffPairGap() );
 
-        if( endP->OfKind( pvMask ) && endN->OfKind( pvMask )
-            && ( m_target->AnchorP() - end.anchor[0] ).EuclideanNorm() <= nearby
+        if( ( m_target->AnchorP() - end.anchor[0] ).EuclideanNorm() <= nearby
             && ( m_target->AnchorN() - end.anchor[1] ).EuclideanNorm() <= nearby )
         {
             end.anchor[0] = m_target->AnchorP();
@@ -491,7 +569,7 @@ void DIFF_PAIR_PLACER::makeSymmetric()
         }
 
         if( m_target->AnchorP() != end.anchor[0] || m_target->AnchorN() != end.anchor[1] )
-            return;
+            return SYMMETRY::NONE;
 
         if( endP->OfKind( pvMask ) && endN->OfKind( pvMask ) )
         {
@@ -499,16 +577,22 @@ void DIFF_PAIR_PLACER::makeSymmetric()
             end.copper[1] = endN->Shape( m_currentLayer );
 
             if( !end.copper[0] || !end.copper[1] )
-                return;
+                return SYMMETRY::NONE;
         }
         else if( std::optional<VECTOR2D> out = alongTrack( endP, end.anchor[0] ) )
         {
-            // Joining tracks already there: the pair comes in the way they go on
-            end.out = -*out;
+            // Joining tracks already there: the pair comes in the way they go on (out is the way
+            // into the stretch, as at the start), at their width where it changes there, and puts
+            // back what they are skewed by
+            end.out = *out;
+            end.width = std::min( static_cast<const SEGMENT*>( endP )->Width(),
+                                  endN->OfKind( ITEM::SEGMENT_T ) ? static_cast<const SEGMENT*>( endN )->Width()
+                                                                  : INT_MAX );
+            endSkew = skewOfTracks( m_currentNode, m_target->PrimP(), m_target->PrimN() );
         }
         else
         {
-            return;
+            return SYMMETRY::NONE;
         }
     }
     else
@@ -519,7 +603,7 @@ void DIFF_PAIR_PLACER::makeSymmetric()
     DP_SYMMETRY_PARAMS params;
     params.width = m_sizes.DiffPairWidth();
     params.gap = m_sizes.DiffPairGap();
-    params.skew = m_skewSoFar;
+    params.skew = m_skewSoFar + endSkew;
 
     DIRECTION_45::CORNER_MODE corners = Settings().GetCornerMode();
 
@@ -578,63 +662,71 @@ void DIFF_PAIR_PLACER::makeSymmetric()
                 return true;
             };
 
-    // The width and gap the rules give a track of the pair that wide at a point, as the router
-    // takes them where a pair starts
-    RULE_RESOLVER* resolver = Router()->GetRuleResolver();
+    // The same head as last time, from and to the same places, comes out as it did; one the pass
+    // was slow on before waits while the head moves
+    PASS pass;
+    pass.p = p;
+    pass.n = n;
+    pass.ends[0] = start.anchor[0];
+    pass.ends[1] = start.anchor[1];
+    pass.ends[2] = end.anchor[0];
+    pass.ends[3] = end.anchor[1];
+    pass.skew = params.skew;
 
-    params.sizeAt =
-            [&]( int aLine, const VECTOR2I& aAt, int aWidth ) -> std::pair<int, int>
+    auto same =
+            [&]( const PASS& aLast )
             {
-                SEGMENT probe;
-                probe.SetEnds( aAt, aAt );
-                probe.SetWidth( aWidth );
-                probe.SetLayer( m_currentLayer );
-                probe.SetNet( aLine == 0 ? m_netP : m_netN );
-
-                SEGMENT coupled;
-                coupled.SetEnds( aAt, aAt );
-                coupled.SetWidth( aWidth );
-                coupled.SetLayer( m_currentLayer );
-                coupled.SetNet( aLine == 0 ? m_netN : m_netP );
-
-                std::pair<int, int> size( params.width, params.gap );
-                CONSTRAINT          constraint;
-
-                if( resolver->QueryConstraint( CONSTRAINT_TYPE::CT_WIDTH, &probe, &coupled, m_currentLayer,
-                                               &constraint )
-                    && constraint.m_Value.HasOpt() )
-                {
-                    size.first = constraint.m_Value.Opt();
-                }
-
-                if( resolver->QueryConstraint( CONSTRAINT_TYPE::CT_DIFF_PAIR_GAP, &probe, &coupled, m_currentLayer,
-                                               &constraint )
-                    && constraint.m_Value.HasOpt() )
-                {
-                    size.second = constraint.m_Value.Opt();
-                }
-
-                return size;
+                return aLast.skew == pass.skew && std::equal( pass.ends, pass.ends + 4, aLast.ends )
+                       && aLast.p.CPoints() == pass.p.CPoints() && aLast.n.CPoints() == pass.n.CPoints();
             };
 
-    m_symmetricParts[0].clear();
-    m_symmetricParts[1].clear();
+    if( m_lastPass && same( *m_lastPass ) )
+    {
+        pass.result = m_lastPass->result;
+    }
+    else if( aMayWait )
+    {
+        return SYMMETRY::WAITING;
+    }
+    else
+    {
+        const auto began = std::chrono::steady_clock::now();
 
-    std::optional<DP_SYMMETRY_RESULT> symmetric = SymmetricPair( p, n, start, end, params );
+        pass.result = SymmetricPair( p, n, start, end, params );
+
+        m_lastPassMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - began ).count();
+        m_lastPass = pass;
+    }
+
+    const std::optional<DP_SYMMETRY_RESULT>& symmetric = pass.result;
 
     if( !symmetric )
-        return;
+        return SYMMETRY::ONE_SIDED;
 
     PNS_DBG( Dbg(), Message, wxString::Format( "symmetric pair: %d bumps", symmetric->bumps ) );
 
     m_currentTrace.SetShape( symmetric->p, symmetric->n );
 
-    // Necked down or widened on the way: each run of one width is a line of its own
+    // Joining tracks of another width: each run of one width is a line of its own
     if( symmetric->parts[0].size() > 1 || symmetric->parts[1].size() > 1 )
     {
         m_symmetricParts[0] = symmetric->parts[0];
         m_symmetricParts[1] = symmetric->parts[1];
     }
+
+    return SYMMETRY::EVEN;
+}
+
+
+void DIFF_PAIR_PLACER::evenHead( const VECTOR2I& aP )
+{
+    // A pass that took longer than this to work out waits while the head moves on
+    constexpr double PASS_BUDGET_MS = 25.0;
+
+    const bool moved = aP != m_lastHeadPoint;
+    m_lastHeadPoint = aP;
+
+    m_symmetry = makeSymmetric( moved && m_lastPassMs > PASS_BUDGET_MS );
 }
 
 
@@ -1010,7 +1102,13 @@ bool DIFF_PAIR_PLACER::Start( const VECTOR2I& aP, ITEM* aStartItem )
     m_placingVia = false;
     m_chainedPlacement = false;
     m_hasFixedAnything = false;
-    m_skewSoFar = 0.0;
+
+    // Going on from tracks already there (a pair necked down out of a part's pins), the pair
+    // takes over their skew
+    m_skewSoFar = skewOfTracks( m_currentNode, m_start.PrimP(), m_start.PrimN() );
+    m_symmetry = SYMMETRY::NONE;
+    m_lastPass.reset();
+    m_lastPassMs = 0.0;
     m_currentTraceOk = false;
     m_currentTrace = DIFF_PAIR();
     m_currentTrace.SetNets( m_netP, m_netN );
@@ -1375,6 +1473,11 @@ bool DIFF_PAIR_PLACER::Move( const VECTOR2I& aP, ITEM* aEndItem )
 
     bool retval = route( aP );
 
+    if( retval )
+        evenHead( aP );
+    else
+        m_symmetry = SYMMETRY::NONE;
+
     NODE* latestNode = m_currentNode;
     m_lastNode = latestNode->Branch();
 
@@ -1516,8 +1619,10 @@ bool DIFF_PAIR_PLACER::FixRoute( const VECTOR2I& aP, ITEM* aEndItem, bool aForce
         m_currentTrace.SetShape( newP, newN );
     }
 
-    // Only as a piece is fixed: drawn again on every move it made the head lag
-    makeSymmetric();
+    // The head is already drawn symmetric as it moved, or left one-sided where that keeps clear
+    // no way; a pass put off while it moved is worked out now
+    if( m_symmetry != SYMMETRY::EVEN && m_symmetry != SYMMETRY::ONE_SIDED )
+        m_symmetry = makeSymmetric( false );
 
     if( m_currentTrace.EndsWithVias() )
     {
@@ -1559,6 +1664,8 @@ bool DIFF_PAIR_PLACER::FixRoute( const VECTOR2I& aP, ITEM* aEndItem, bool aForce
 
     m_symmetricParts[0].clear();
     m_symmetricParts[1].clear();
+    m_symmetry = SYMMETRY::NONE;
+    m_lastPass.reset();
 
     m_lastNode->Add( lineP );
     m_lastNode->Add( lineN );

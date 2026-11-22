@@ -158,7 +158,17 @@ public:
     void GetModifiedNets( std::vector<NET_HANDLE>& aNets ) const override;
 
     const DIFF_PAIR CurrentTrace() const { return m_currentTrace; }
-  
+
+    /// What the symmetric pass made of the head on the last move.
+    enum class SYMMETRY
+    {
+        NONE,      ///< Not tried: the head's last segment is held back for the next click
+        EVEN,      ///< Drawn as two lines either side of one centre
+        ONE_SIDED, ///< No symmetric pair keeps clear there: left as the router laid it
+        WAITING    ///< Put off while the head moves, being slow there: drawn when it rests
+    };
+
+    SYMMETRY Symmetry() const { return m_symmetry; }
 
 private:
     static constexpr int DP_DEFAULT_GAP_EPSILON = 1000;
@@ -209,10 +219,14 @@ private:
     /**
      * Redraw the current trace as two lines either side of one centre line, opened evenly at its
      * pads, its arcs about one centre and its bends' skew put back in bumps (SymmetricPair).
-     * Left as the router laid it where no such pair keeps clear.  Called as a piece is fixed,
-     * not as the head moves.
+     * Left as the router laid it where no such pair keeps clear.  Called as the head moves: the
+     * same head as last time takes the same shape again at no cost, and where the pass has been
+     * slow it waits (aMayWait) until the head rests.
      */
-    void makeSymmetric();
+    SYMMETRY makeSymmetric( bool aMayWait );
+
+    /// The symmetric pass for the head just routed to aP, as the head moves.
+    void evenHead( const VECTOR2I& aP );
 
     /// route step, walk around mode
     bool rhWalkOnly( const VECTOR2I& aP );
@@ -307,6 +321,25 @@ private:
 
     ///< The symmetric pass's runs of one width for each line, where it changed the pair's width
     std::vector<DP_SYMMETRY_PART> m_symmetricParts[2];
+
+    ///< What the pass made of the head on the last move
+    SYMMETRY m_symmetry = SYMMETRY::NONE;
+
+    ///< The head the pass last worked on, as the router laid it, and what came of it
+    struct PASS
+    {
+        SHAPE_LINE_CHAIN                  p;
+        SHAPE_LINE_CHAIN                  n;
+        VECTOR2I                          ends[4];
+        double                            skew = 0.0;
+        std::optional<DP_SYMMETRY_RESULT> result;
+    };
+
+    std::optional<PASS> m_lastPass;
+
+    ///< How long the pass last took to work out, and where the head was on the last move
+    double   m_lastPassMs = 0.0;
+    VECTOR2I m_lastHeadPoint;
 };
 
 }
