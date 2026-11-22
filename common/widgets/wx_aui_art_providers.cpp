@@ -167,8 +167,8 @@ wxSize WX_AUI_TOOLBAR_ART::GetToolSize( wxDC& aDc, wxWindow* aWindow,
 
     // Room round each icon, so the rounded ground of a hovered or active tool has a margin: more
     // across the bar than along it, where a vertical bar runs out of the editor's height.
-    const int along = aWindow->FromDIP( 6 );
-    const int across = aWindow->FromDIP( 12 );
+    const int along = aWindow->FromDIP( 4 );
+    const int across = aWindow->FromDIP( 9 );
 
     if( m_flags & wxAUI_TB_VERTICAL )
         return wxSize( width + across, height + aWindow->FromDIP( 4 ) );
@@ -280,6 +280,30 @@ void WX_AUI_TOOLBAR_ART::DrawBackground( wxDC& aDc, wxWindow* aWindow, const wxR
     aDc.SetPen( *wxTRANSPARENT_PEN );
     aDc.SetBrush( wxBrush( artFace() ) );
     aDc.DrawRectangle( aRect );
+
+    // Continuity, as the mock has it: black bars parted from what they border by a hairline.
+    // Only a frame's own docked toolbars; one inside a panel or a dialog stands on its ground.
+    wxWindow* parent = aWindow->GetParent();
+
+    if( !parent || !parent->IsTopLevel() )
+        return;
+
+    const wxRect r = aWindow->GetClientRect();
+    aDc.SetPen( wxPen( artRule(), 1 ) );
+
+    if( m_flags & wxAUI_TB_VERTICAL )
+    {
+        // The rule on the side that faces the canvas.
+        const int  mid = parent->GetClientSize().x / 2;
+        const bool onLeft = parent->ScreenToClient( aWindow->GetScreenPosition() ).x < mid;
+        const int  x = onLeft ? r.GetRight() : r.x;
+        aDc.DrawLine( x, r.y, x, r.GetBottom() + 1 );
+    }
+    else
+    {
+        aDc.DrawLine( r.x, r.y, r.GetRight() + 1, r.y );                 // under the menu bar
+        aDc.DrawLine( r.x, r.GetBottom(), r.GetRight() + 1, r.GetBottom() );
+    }
 }
 
 
@@ -468,10 +492,31 @@ WX_AUI_DOCK_ART::WX_AUI_DOCK_ART() :
     // Turn off the ridiculous looking gradient
     m_gradientType = wxAUI_GRADIENT_NONE;
 
-    // Continuity, as the mock has it: a pane's name with air round it, and panes standing a little
-    // apart, the gap in the surface's colour. Both are in DIP: wx scales them for each window.
-    m_captionSize = 34;
-    m_sashSize = 6;
+    // Continuity, as the mock has it: a pane's name with air round it, and panes parted by a
+    // hairline down the middle of a narrow sash. Both are in DIP: wx scales them for each window.
+    m_captionSize = 30;
+    m_sashSize = 5;
+}
+
+
+void WX_AUI_DOCK_ART::DrawSash( wxDC& aDc, wxWindow* aWindow, int aOrientation, const wxRect& aRect )
+{
+    aDc.SetPen( *wxTRANSPARENT_PEN );
+    aDc.SetBrush( wxBrush( artFace() ) );
+    aDc.DrawRectangle( aRect );
+
+    aDc.SetPen( wxPen( artRule(), 1 ) );
+
+    if( aRect.width < aRect.height )
+    {
+        const int x = aRect.x + aRect.width / 2;
+        aDc.DrawLine( x, aRect.y, x, aRect.GetBottom() + 1 );
+    }
+    else
+    {
+        const int y = aRect.y + aRect.height / 2;
+        aDc.DrawLine( aRect.x, y, aRect.GetRight() + 1, y );
+    }
 }
 
 

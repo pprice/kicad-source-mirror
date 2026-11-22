@@ -891,6 +891,20 @@ void PCB_PROPERTIES_PANEL::rebuildProperties( const SELECTION& aRawSelection )
 
     PROPERTIES_PANEL::rebuildProperties( aSelection );
 
+    // Continuity, as the mock has it: a net's name in its net colour. The name column stays
+    // quiet (PG_CELL_RENDERER draws it so whatever the cell's colour).
+    for( const wxString& name : { wxString( wxS( "Net" ) ), wxString( wxS( "Guarded Net" ) ) } )
+    {
+        if( wxPGProperty* prop = m_grid->GetPropertyByName( name ) )
+        {
+            wxColour colour = m_frame->NetColour( prop->GetValueAsString() );
+
+            if( colour.IsOk() )
+                prop->SetTextColour( colour );
+            else
+                prop->SetDefaultColours();
+        }
+    }
 }
 
 

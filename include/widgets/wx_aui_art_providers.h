@@ -70,6 +70,9 @@ public:
     /// Continuity: a pane's name set in from its edge as far as its content, with room above.
     void DrawCaption( wxDC& aDc, wxWindow* aWindow, const wxString& aText, const wxRect& aRect,
                       wxAuiPaneInfo& aPane ) override;
+
+    /// Continuity: panes on black, parted by a hairline down the sash's middle.
+    void DrawSash( wxDC& aDc, wxWindow* aWindow, int aOrientation, const wxRect& aRect ) override;
 };
 
 #if wxCHECK_VERSION( 3, 3, 0 )

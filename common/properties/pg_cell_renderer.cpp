@@ -33,6 +33,26 @@ PG_CELL_RENDERER::PG_CELL_RENDERER() :
 bool PG_CELL_RENDERER::Render( wxDC &aDC, const wxRect &aRect, const wxPropertyGrid *aGrid,
                                wxPGProperty *aProperty, int aColumn, int aItem, int aFlags ) const
 {
+    bool filled = renderCell( aDC, aRect, aGrid, aProperty, aColumn, aItem, aFlags );
+
+    // Continuity, as the mock has it: rows parted by a hairline from the name's start to the
+    // pane's edge, no line down the middle or the margin (the grid's line colour is its ground),
+    // and none under a group's name. Only in the grid itself: aItem is -1 there, and the
+    // drop-down list of a choice draws with its own index.
+    if( aItem < 0 && !aProperty->IsCategory() )
+    {
+        aDC.SetPen( wxPen( wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT ), 1 ) );
+        aDC.DrawLine( aRect.GetLeft() - ( aColumn > 0 ? 2 : 0 ), aRect.GetBottom(),
+                      aRect.GetRight() + 2, aRect.GetBottom() );
+    }
+
+    return filled;
+}
+
+
+bool PG_CELL_RENDERER::renderCell( wxDC &aDC, const wxRect &aRect, const wxPropertyGrid *aGrid,
+                                   wxPGProperty *aProperty, int aColumn, int aItem, int aFlags ) const
+{
     wxPGCell cell = aGrid->GetUnspecifiedValueAppearance();
 
     if( aColumn > 0 )

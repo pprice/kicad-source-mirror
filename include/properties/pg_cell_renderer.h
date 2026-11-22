@@ -29,6 +29,11 @@ public:
     PG_CELL_RENDERER();
     virtual ~PG_CELL_RENDERER() = default;
 
+    /// Continuity: the cell, then a hairline along its foot (the grid's own lines are hidden).
     bool Render( wxDC &aDC, const wxRect &aRect, const wxPropertyGrid *aGrid,
                  wxPGProperty *aProperty, int aColumn, int aItem, int aFlags ) const override;
+
+private:
+    bool renderCell( wxDC &aDC, const wxRect &aRect, const wxPropertyGrid *aGrid,
+                     wxPGProperty *aProperty, int aColumn, int aItem, int aFlags ) const;
 };

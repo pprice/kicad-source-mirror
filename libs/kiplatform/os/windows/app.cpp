@@ -94,16 +94,19 @@ public:
 
         switch( index )
         {
+        // As the mock has it (Phil: "black panels with thin grey border", where every surface
+        // was raised grey): the window's chrome, its panels and its bars all on the page's
+        // black, parted by rules; only what floats or is picked from is raised.
         case wxSYS_COLOUR_WINDOW:
         case wxSYS_COLOUR_LISTBOX:
         case wxSYS_COLOUR_APPWORKSPACE:
-            return surface;
-
         case wxSYS_COLOUR_BTNFACE:
         case wxSYS_COLOUR_ACTIVECAPTION:
         case wxSYS_COLOUR_INACTIVECAPTION:
-        case wxSYS_COLOUR_MENU:
         case wxSYS_COLOUR_MENUBAR:
+            return surface;
+
+        case wxSYS_COLOUR_MENU:
         case wxSYS_COLOUR_INFOBK:
             return raised;
 

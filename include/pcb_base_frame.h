@@ -161,6 +161,14 @@ public:
     virtual BOARD_DESIGN_SETTINGS& GetDesignSettings() const;
 
     /**
+     * Continuity: the colour a net is given on the board (its own, else its net class's), for
+     * showing its name in that colour in the panels; wxNullColour when it has none.
+     *
+     * @param aNetname the net's name as shown (unescaped).
+     */
+    wxColour NetColour( const wxString& aNetname ) const;
+
+    /**
      * Helper to retrieve the current color settings.
      */
     virtual COLOR_SETTINGS* GetColorSettings( bool aForceRefresh = false ) const override

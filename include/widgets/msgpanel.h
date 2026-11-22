@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -135,6 +136,15 @@ public:
                        aMessageItem.GetPadding() );
     }
 
+    /**
+     * Continuity: a colour for a message's value, or wxNullColour for the usual ink. The PCB
+     * editor gives a net's name its net colour, as the mock has it.
+     */
+    void SetValueColourer( std::function<wxColour( const wxString& aLabel, const wxString& aValue )> aColourer )
+    {
+        m_valueColourer = std::move( aColourer );
+    }
+
     DECLARE_EVENT_TABLE()
 
 protected:
@@ -156,6 +166,8 @@ protected:
     std::vector<MSG_PANEL_ITEM> m_Items;
     int                         m_last_x;      ///< the last used x coordinate
     wxSize                      m_fontSize;
+
+    std::function<wxColour( const wxString&, const wxString& )> m_valueColourer;
 };
 
 

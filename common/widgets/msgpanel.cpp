@@ -147,6 +147,11 @@ void EDA_MSG_PANEL::OnPaint( wxPaintEvent& aEvent )
         dc.DrawLine( x, top, x, bottom );
     }
 
+    // And across it, above and below, as the mock parts it from the editor and the status bar.
+    const wxSize size = GetClientSize();
+    dc.DrawLine( 0, 0, size.x, 0 );
+    dc.DrawLine( 0, size.y - 1, size.x, size.y - 1 );
+
     aEvent.Skip();
 }
 
@@ -218,8 +223,18 @@ void EDA_MSG_PANEL::showItem( wxDC& aDC, const MSG_PANEL_ITEM& aItem )
 
     if( !aItem.m_LowerText.IsEmpty() )
     {
+        wxColour colour = active ? ink : quiet;
+
+        if( active && m_valueColourer )
+        {
+            wxColour own = m_valueColourer( aItem.m_UpperText, aItem.m_LowerText );
+
+            if( own.IsOk() )
+                colour = own;
+        }
+
         aDC.SetFont( valueFont() );
-        aDC.SetTextForeground( active ? ink : quiet );
+        aDC.SetTextForeground( colour );
         aDC.DrawText( aItem.m_LowerText, aItem.m_X, aItem.m_LowerY );
     }
 }

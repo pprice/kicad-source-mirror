@@ -28,6 +28,7 @@
 #include <advanced_config.h>
 #include <base_units.h>
 #include <board.h>
+#include <board_design_settings.h>
 #include <cleanup_item.h>
 #include <collectors.h>
 #include <confirm.h>
@@ -46,7 +47,11 @@
 #include <pcb_track.h>
 #include <pgm_base.h>
 #include <project_pcb.h>
+#include <netclass.h>
+#include <netinfo.h>
+#include <project/net_settings.h>
 #include <scoped_set_reset.h>
+#include <string_utils.h>
 #include <trace_helpers.h>
 #include <wildcards_and_files_ext.h>
 #include <zone.h>
@@ -85,6 +90,19 @@ PCB_BASE_FRAME::PCB_BASE_FRAME( KIWAY* aKiway, wxWindow* aParent, FRAME_T aFrame
         m_inFpChangeTimerEvent( false )
 {
     m_watcherDebounceTimer.Bind( wxEVT_TIMER, &PCB_BASE_FRAME::OnFpChangeDebounceTimer, this );
+
+    // Continuity: a net's name in the message panel in its net colour, as the mock has it.
+    if( m_messagePanel )
+    {
+        m_messagePanel->SetValueColourer(
+                [this]( const wxString& aLabel, const wxString& aValue ) -> wxColour
+                {
+                    if( aLabel == _( "Net" ) )
+                        return NetColour( aValue );
+
+                    return wxNullColour;
+                } );
+    }
 }
 
 
@@ -540,6 +558,46 @@ void PCB_BASE_FRAME::SetTitleBlock( const TITLE_BLOCK& aTitleBlock )
 BOARD_DESIGN_SETTINGS& PCB_BASE_FRAME::GetDesignSettings() const
 {
     return m_pcb->GetDesignSettings();
+}
+
+
+wxColour PCB_BASE_FRAME::NetColour( const wxString& aNetname ) const
+{
+    if( !m_pcb || aNetname.IsEmpty() )
+        return wxNullColour;
+
+    const wxString name = EscapeString( aNetname, CTX_NETNAME );
+    NETINFO_ITEM*  net = m_pcb->FindNet( name );
+
+    if( !net || net->GetNetCode() <= 0 )
+        return wxNullColour;
+
+    COLOR4D colour = COLOR4D::UNSPECIFIED;
+
+    if( EDA_DRAW_PANEL_GAL* canvas = GetCanvas(); canvas && canvas->GetView() )
+    {
+        auto* rs = static_cast<KIGFX::PCB_RENDER_SETTINGS*>( canvas->GetView()->GetPainter()->GetSettings() );
+        auto  it = rs->GetNetColorMap().find( net->GetNetCode() );
+
+        if( it != rs->GetNetColorMap().end() )
+            colour = it->second;
+    }
+
+    if( colour == COLOR4D::UNSPECIFIED )
+    {
+        if( std::shared_ptr<NET_SETTINGS>& settings = m_pcb->GetDesignSettings().m_NetSettings )
+        {
+            std::shared_ptr<NETCLASS> nc = settings->GetEffectiveNetClass( name );
+
+            if( nc && nc->HasPcbColor() )
+                colour = nc->GetPcbColor();
+        }
+    }
+
+    if( colour == COLOR4D::UNSPECIFIED )
+        return wxNullColour;
+
+    return colour.WithAlpha( 1.0 ).ToColour();
 }
 
 

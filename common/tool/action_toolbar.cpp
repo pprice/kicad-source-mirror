@@ -244,16 +244,17 @@ static void spaceToolbar( wxAuiToolBar* aBar )
 {
     const bool vertical = aBar->GetWindowStyle() & wxAUI_TB_VERTICAL;
 
-    aBar->SetToolPacking( aBar->FromDIP( vertical ? 2 : 4 ) );
-    aBar->SetToolBorderPadding( aBar->FromDIP( 3 ) );
+    // As the mock packs them (Phil, after a first pass: "over done the spacing a _bit_").
+    aBar->SetToolPacking( aBar->FromDIP( 2 ) );
+    aBar->SetToolBorderPadding( aBar->FromDIP( 2 ) );
 
     if( vertical )
-        aBar->SetMargins( aBar->FromDIP( 6 ), aBar->FromDIP( 6 ), aBar->FromDIP( 8 ), aBar->FromDIP( 8 ) );
+        aBar->SetMargins( aBar->FromDIP( 4 ), aBar->FromDIP( 4 ), aBar->FromDIP( 6 ), aBar->FromDIP( 6 ) );
     else
-        aBar->SetMargins( aBar->FromDIP( 12 ), aBar->FromDIP( 12 ), aBar->FromDIP( 6 ), aBar->FromDIP( 6 ) );
+        aBar->SetMargins( aBar->FromDIP( 8 ), aBar->FromDIP( 8 ), aBar->FromDIP( 4 ), aBar->FromDIP( 4 ) );
 
     if( wxAuiToolBarArt* art = aBar->GetArtProvider() )
-        art->SetElementSize( wxAUI_TBART_SEPARATOR_SIZE, aBar->FromDIP( vertical ? 11 : 21 ) );
+        art->SetElementSize( wxAUI_TBART_SEPARATOR_SIZE, aBar->FromDIP( vertical ? 11 : 13 ) );
 }
 
 

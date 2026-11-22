@@ -56,7 +56,8 @@ class PROPERTIES_PANEL_GRID : public wxPropertyGrid
 {
 public:
     PROPERTIES_PANEL_GRID( wxWindow* aParent ) :
-            wxPropertyGrid( aParent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxPG_DEFAULT_STYLE | wxPG_TOOLTIPS )
+            wxPropertyGrid( aParent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                            wxPG_DEFAULT_STYLE | wxPG_TOOLTIPS | wxBORDER_NONE )
     {
     }
 
@@ -146,9 +147,9 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     m_grid->DedicateKey( WXK_NUMPAD_ENTER );
     m_grid->DedicateKey( WXK_DOWN );
     m_grid->DedicateKey( WXK_UP );
-    // Room between rows, as the mock's list has: wx's widest spacing, a third of the font's height
-    // above and below each.
-    m_grid->SetVerticalSpacing( 3 );
+    // Room between rows, as the mock's list has (Phil, 2026-11-22: the widest, 3, was "a bit"
+    // too much).
+    m_grid->SetVerticalSpacing( 2 );
     // Edge to edge, so its scroll bar stands flush with the pane's side.
     mainSizer->Add( m_grid, 1, wxEXPAND );
 
@@ -160,17 +161,18 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
 #endif
 
     // Continuity, as the mock has it (docs/kicad-look.md): one ground for the whole list, a
-    // group's name quiet on it rather than on a grey bar, and hairlines between the rows.
+    // group's name quiet on it rather than on a grey bar, and hairlines between the rows. The
+    // grid's own lines (down the margin and the middle as well as across) take the ground; the
+    // cell renderer draws the rule across each row (PG_CELL_RENDERER::Render).
     {
         wxColour ground = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
-        wxColour rule = wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT );
 
         m_grid->SetCaptionBackgroundColour( ground );
         m_grid->SetCaptionTextColour( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
         m_grid->SetMarginColour( ground );
         m_grid->SetCellBackgroundColour( ground );
         m_grid->SetEmptySpaceColour( ground );
-        m_grid->SetLineColour( rule );
+        m_grid->SetLineColour( ground );
     }
 
     SetFont( KIUI::GetDockedPaneFont( this ) );
