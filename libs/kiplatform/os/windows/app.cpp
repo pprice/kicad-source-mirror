@@ -24,6 +24,9 @@
 #include <wx/log.h>
 #include <wx/string.h>
 #include <wx/window.h>
+#include <wx/eventfilter.h>
+#include <wx/pen.h>
+#include <wx/toplevel.h>
 #if wxCHECK_VERSION( 3, 3, 0 )
 #include <wx/msw/darkmode.h>
 #endif
@@ -66,19 +69,141 @@ extern "C"
 #endif
 
 #if wxCHECK_VERSION( 3, 3, 0 )
+// Continuity's palette (src/ui/src/styles/tokens.css in pprice/continuity): surfaces of matte
+// black, white ink and a quieter grey, rules in dark grey, and gold for what is acted on.
+namespace CONTINUITY_PALETTE
+{
+    static const wxColour surface( 15, 15, 15 );          // --surface
+    static const wxColour raised( 27, 27, 27 );           // --surface-raised
+    static const wxColour rule( 48, 48, 48 );             // --rule
+    static const wxColour edge( 116, 116, 111 );          // --edge
+    static const wxColour ink( 243, 243, 238 );           // --ink
+    static const wxColour quiet( 162, 162, 157 );         // --ink-quiet
+    static const wxColour accent( 226, 184, 77 );         // --accent
+    static const wxColour onAccent( 17, 17, 17 );         // --on-accent
+    static const wxColour accentFaint( 58, 51, 35 );      // gold at a tenth over the surface
+}
+
+
 class KICAD_DARK_MODE_SETTINGS : public wxDarkModeSettings
 {
 public:
     wxColour GetColour( wxSystemColour index ) override
     {
+        using namespace CONTINUITY_PALETTE;
+
         switch( index )
         {
-            // This fixes "Control Light"
+        case wxSYS_COLOUR_WINDOW:
+        case wxSYS_COLOUR_LISTBOX:
+        case wxSYS_COLOUR_APPWORKSPACE:
+            return surface;
+
+        case wxSYS_COLOUR_BTNFACE:
+        case wxSYS_COLOUR_ACTIVECAPTION:
+        case wxSYS_COLOUR_INACTIVECAPTION:
+        case wxSYS_COLOUR_MENU:
+        case wxSYS_COLOUR_MENUBAR:
+        case wxSYS_COLOUR_INFOBK:
+            return raised;
+
         case wxSYS_COLOUR_3DLIGHT:
-            return wxColour( 0x2B2B2B );
+        case wxSYS_COLOUR_BTNHIGHLIGHT:
+        case wxSYS_COLOUR_BTNSHADOW:
+        case wxSYS_COLOUR_GRIDLINES:
+        case wxSYS_COLOUR_SCROLLBAR:
+            return rule;
+
+        case wxSYS_COLOUR_BTNTEXT:
+        case wxSYS_COLOUR_CAPTIONTEXT:
+        case wxSYS_COLOUR_INFOTEXT:
+        case wxSYS_COLOUR_LISTBOXTEXT:
+        case wxSYS_COLOUR_LISTBOXHIGHLIGHTTEXT:
+        case wxSYS_COLOUR_MENUTEXT:
+        case wxSYS_COLOUR_WINDOWTEXT:
+            return ink;
+
+        case wxSYS_COLOUR_INACTIVECAPTIONTEXT:
+            return quiet;
+
+        case wxSYS_COLOUR_GRAYTEXT:
+            return edge;
+
+        case wxSYS_COLOUR_LISTBOXHIGHLIGHT:
+            return accentFaint;
+
+        case wxSYS_COLOUR_HIGHLIGHT:
+        case wxSYS_COLOUR_HOTLIGHT:
+            return accent;
+
+        case wxSYS_COLOUR_HIGHLIGHTTEXT:
+            return onAccent;
 
         default: return wxDarkModeSettings::GetColour( index );
         }
+    }
+
+    wxColour GetMenuColour( wxMenuColour which ) override
+    {
+        using namespace CONTINUITY_PALETTE;
+
+        switch( which )
+        {
+        case wxMenuColour::StandardFg: return ink;
+        case wxMenuColour::StandardBg: return raised;
+        case wxMenuColour::DisabledFg: return edge;
+        case wxMenuColour::HotBg:      return rule;
+        default:                       return wxDarkModeSettings::GetMenuColour( which );
+        }
+    }
+
+    wxPen GetBorderPen() override
+    {
+        return wxPen( CONTINUITY_PALETTE::rule );
+    }
+};
+
+
+// Windows 11 draws each frame's title bar in a colour of its own unless asked: every top-level
+// window is given the raised surface, white ink and a dark grey border as it is created.
+// dwmapi is loaded by name, so nothing has to link it.
+class TITLE_BAR_FILTER : public wxEventFilter
+{
+public:
+    int FilterEvent( wxEvent& aEvent ) override
+    {
+        if( aEvent.GetEventType() == wxEVT_CREATE )
+        {
+            if( wxTopLevelWindow* tlw = wxDynamicCast( aEvent.GetEventObject(), wxTopLevelWindow ) )
+                Paint( tlw->GetHWND() );
+        }
+
+        return Event_Skip;
+    }
+
+private:
+    static void Paint( WXHWND aHwnd )
+    {
+        using SET_ATTRIBUTE = HRESULT( WINAPI* )( HWND, DWORD, LPCVOID, DWORD );
+        static SET_ATTRIBUTE setAttribute = []() -> SET_ATTRIBUTE
+        {
+            HMODULE dwm = ::LoadLibraryW( L"dwmapi.dll" );
+            return dwm ? reinterpret_cast<SET_ATTRIBUTE>( ::GetProcAddress( dwm, "DwmSetWindowAttribute" ) )
+                       : nullptr;
+        }();
+
+        if( !setAttribute || !aHwnd )
+            return;
+
+        auto ref = []( const wxColour& c ) -> COLORREF { return RGB( c.Red(), c.Green(), c.Blue() ); };
+        const COLORREF caption = ref( CONTINUITY_PALETTE::raised );
+        const COLORREF text = ref( CONTINUITY_PALETTE::ink );
+        const COLORREF border = ref( CONTINUITY_PALETTE::rule );
+
+        // DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR: Windows 11 and later.
+        setAttribute( (HWND) aHwnd, 34, &border, sizeof( border ) );
+        setAttribute( (HWND) aHwnd, 35, &caption, sizeof( caption ) );
+        setAttribute( (HWND) aHwnd, 36, &text, sizeof( text ) );
     }
 };
 #endif
@@ -132,7 +257,18 @@ bool KIPLATFORM::APP::Init()
 void KIPLATFORM::APP::EnableDarkMode( bool aForce )
 {
 #if wxCHECK_VERSION( 3, 3, 0 )
-    wxTheApp->MSWEnableDarkMode( aForce ? wxApp::DarkMode_Always : wxApp::DarkMode_Auto, new KICAD_DARK_MODE_SETTINGS() );
+    if( wxTheApp->MSWEnableDarkMode( aForce ? wxApp::DarkMode_Always : wxApp::DarkMode_Auto,
+                                     new KICAD_DARK_MODE_SETTINGS() ) )
+    {
+        // Kept for the life of the process: a filter destroyed while still added asserts.
+        static TITLE_BAR_FILTER* titleBars = nullptr;
+
+        if( !titleBars )
+        {
+            titleBars = new TITLE_BAR_FILTER();
+            wxEvtHandler::AddFilter( titleBars );
+        }
+    }
 #endif
 }
 
