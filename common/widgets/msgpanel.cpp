@@ -21,6 +21,8 @@
 
 #include <widgets/msgpanel.h>
 
+#include <algorithm>
+
 #include <wx/dcscreen.h>
 #include <wx/dcclient.h>
 #include <wx/settings.h>
@@ -130,9 +132,6 @@ void EDA_MSG_PANEL::updateItemPos( MSG_PANEL_ITEM& item )
     wxString lowerText = item.GetLowerText();
     wxSize   drawSize = GetClientSize();
 
-    text = ( upperText.Len() > lowerText.Len() ) ? upperText : lowerText;
-    text.Append( ' ', item.GetPadding() );
-
     /* Don't put the first message a window client position 0.  Offset by
      * one 'W' character width. */
     if( m_last_x == 0 )
@@ -143,7 +142,17 @@ void EDA_MSG_PANEL::updateItemPos( MSG_PANEL_ITEM& item )
     item.m_UpperY = ( drawSize.y / 2 ) - m_fontSize.y;
     item.m_LowerY = drawSize.y - m_fontSize.y;
 
-    m_last_x += GetTextExtent( text ).x;
+    // The label is drawn quiet and the value bold (showItem): each measured in its own face.
+    wxClientDC dc( this );
+    dc.SetFont( labelFont() );
+    int width = dc.GetTextExtent( upperText ).x;
+    dc.SetFont( valueFont() );
+    width = std::max( width, dc.GetTextExtent( lowerText ).x );
+
+    text.Append( ' ', item.GetPadding() );
+    width += dc.GetTextExtent( text ).x;
+
+    m_last_x += width;
 
     // Add an extra space between texts for a better look:
     m_last_x += m_fontSize.x;
@@ -166,23 +175,38 @@ void EDA_MSG_PANEL::AppendMessage( const wxString& aUpperText, const wxString& a
 
 void EDA_MSG_PANEL::showItem( wxDC& aDC, const MSG_PANEL_ITEM& aItem )
 {
-    COLOR4D color;
-
-    // Change the text to a disabled color when the window isn't active
+    // Continuity's "important first": the value bold in the ink, its label quiet above it. The
+    // ink drops to the quiet colour when the window isn't active.
     wxTopLevelWindow* tlw = dynamic_cast<wxTopLevelWindow*>( wxGetTopLevelParent( this ) );
-
-    if( tlw && !tlw->IsActive() )
-        color = wxSystemSettings::GetColour( wxSYS_COLOUR_GRAYTEXT );
-    else
-        color = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOWTEXT );
-
-    aDC.SetTextForeground( color.ToColour() );
+    const bool        active = !tlw || tlw->IsActive();
+    const wxColour    quiet = wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT );
+    const wxColour    ink = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOWTEXT );
 
     if( !aItem.m_UpperText.IsEmpty() )
+    {
+        aDC.SetFont( labelFont() );
+        aDC.SetTextForeground( quiet );
         aDC.DrawText( aItem.m_UpperText, aItem.m_X, aItem.m_UpperY );
+    }
 
     if( !aItem.m_LowerText.IsEmpty() )
+    {
+        aDC.SetFont( valueFont() );
+        aDC.SetTextForeground( active ? ink : quiet );
         aDC.DrawText( aItem.m_LowerText, aItem.m_X, aItem.m_LowerY );
+    }
+}
+
+
+wxFont EDA_MSG_PANEL::labelFont()
+{
+    return KIUI::GetControlFont( this );
+}
+
+
+wxFont EDA_MSG_PANEL::valueFont()
+{
+    return KIUI::GetControlFont( this ).Bold();
 }
 
 

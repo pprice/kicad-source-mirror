@@ -146,6 +146,10 @@ protected:
 
     void showItem( wxDC& dc, const MSG_PANEL_ITEM& aItem );
 
+    /// A message's label (its upper text), drawn quiet, and its value, drawn bold.
+    wxFont labelFont();
+    wxFont valueFont();
+
     void erase( wxDC* DC );
 
 protected:
