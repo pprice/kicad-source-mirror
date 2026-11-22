@@ -841,13 +841,13 @@ private:
      * The radius each bend of the runs is to have, before any is made.
      *
      * With a fillet's radius, a 45 degree chamfer too short for a fillet at each of its corners is
-     * one bend, rounded where its straights would meet; tracks chamfered side by side go by the
-     * inner one, so all of them or none.
+     * one bend, rounded where its straights would meet.
      *
      * The most a bend can have takes half of each straight it shares with another bend, and all but
-     * a short lead of one that ends the run; the factor takes a share of that, the fillet's radius
-     * caps it.  Bends side by side are laid about the inner one's centre, each the further out by
-     * how far its track runs from the inner, and no wider than its own most.
+     * a short lead of one that ends the run.  Each bend has the fillet's radius, or the factor's
+     * share of its most; bends side by side have one radius, so they are one curve repeated (the
+     * gap between them widens a little round the bend, and never narrows).  A bend with less room
+     * than that has what it has.
      */
     void sizeArcs( const std::vector<RUN>& aRuns )
     {
@@ -874,13 +874,10 @@ private:
                 }
             }
 
-            for( const std::vector<size_t>& group : sideBySide( chamfers ) )
+            for( const AT& at : chamfers )
             {
-                if( chamfers[group.front()].chamfer >= chamfers[group.front()].fillets )
-                    continue;
-
-                for( size_t k : group )
-                    m_merged.insert( cornerKey( chamfers[k].layer, chamfers[k].key ) );
+                if( at.chamfer < at.fillets )
+                    m_merged.insert( cornerKey( at.layer, at.key ) );
             }
         }
 
@@ -923,17 +920,24 @@ private:
 
         for( const std::vector<size_t>& group : sideBySide( all ) )
         {
-            const AT& inner = all[group.front()];
-            double    radius = m_factor * inner.most;
+            // One radius for them all: the fillet's, else the most the tightest allows; a track
+            // with less room than that has what it has
+            double radius = std::numeric_limits<double>::max();
 
             if( m_maxRadius > 0 )
-                radius = std::min( radius, (double) m_maxRadius );
+            {
+                radius = m_maxRadius;
+            }
+            else
+            {
+                for( size_t k : group )
+                    radius = std::min( radius, m_factor * all[k].most );
+            }
 
             for( size_t k : group )
             {
                 const AT& at = all[k];
-                double    out = ( dot( at.b, inner.v ) - dot( at.b, at.v ) ) * std::sin( at.half );
-                double    r = std::min( radius + out, at.most );
+                double    r = std::min( radius, at.most );
 
                 if( at.least <= at.most )
                     r = std::max( r, at.least );

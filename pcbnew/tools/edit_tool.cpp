@@ -1673,9 +1673,9 @@ int EDIT_TOOL::ConvertTrackCorners( const TOOL_EVENT& aEvent )
             {
                     _( "Radius:" ),
                     WX_MULTI_ENTRY_DIALOG::UNIT_BOUND{ radius },
-                    _( "Each corner gets this radius, or as much as its tracks allow; a large "
-                       "radius curves the whole bend.  Tracks that turn side by side keep their "
-                       "spacing: the inner gets the radius, the others more." ),
+                    _( "Each corner gets this radius, or as much as its tracks allow.  A short 45 "
+                       "degree chamfer is rounded as one corner, so a large radius curves whole "
+                       "bends." ),
             },
         };
 

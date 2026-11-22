@@ -62,10 +62,10 @@ struct TRACK_CORNERS_RESULT
  *
  * A corner becomes an arc sized by \a aFactor of the most it could be: each straight between two
  * corners is shared half and half, so at 1 the two corners of a 45 degree bend meet in the middle
- * of its diagonal as one arc, and at 0.5 half of each side is curved.  Corners that turn side by
- * side, as a bus does, are laid about one centre: the inner sized by the factor, the others further
- * out by how far apart they run.  \a aMaxRadius, above 0, makes it a fillet: it caps the radius
- * of a corner, or of the inner of corners side by side.  An arc that
+ * of its diagonal as one arc, and at 0.5 half of each side is curved.  \a aMaxRadius, above 0,
+ * makes it a fillet of that radius, and a 45 degree chamfer too short for one at each corner is
+ * rounded as one corner.  Corners that turn side by side, as a bus does, have one radius, the
+ * tightest's with a factor, so they are one curve repeated.  An arc that
  * would come nearer another net than its rules allow, and nearer than the corner was, is made
  * smaller until it does not.
  *
