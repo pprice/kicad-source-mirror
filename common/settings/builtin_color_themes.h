@@ -635,7 +635,17 @@ static const std::map<int, COLOR4D> s_continuityColors =
             { F_Fab,                        CSS_COLOR( 162, 162, 157, 1 ) },
             { B_Fab,                        CSS_COLOR( 110, 118, 128, 1 ) },
             { Dwgs_User,                    CSS_COLOR( 162, 162, 157, 1 ) },
-            { Cmts_User,                    CSS_COLOR( 91,  155, 255, 1 ) },
+            // The other layers stay apart from each other by hue, muted, so none reads as a net
+            // (bright colours are copper's), as gold or as magenta.
+            { Cmts_User,                    CSS_COLOR( 128, 146, 168, 1 ) },
+            { Eco1_User,                    CSS_COLOR( 132, 160, 150, 1 ) },
+            { Eco2_User,                    CSS_COLOR( 168, 156, 120, 1 ) },
+            { F_Adhes,                      CSS_COLOR( 150, 128, 112, 1 ) },
+            { B_Adhes,                      CSS_COLOR( 104, 112, 132, 1 ) },
+            { F_Paste,                      CSS_COLOR( 176, 164, 158, 0.9 ) },
+            { B_Paste,                      CSS_COLOR( 128, 152, 156, 0.9 ) },
+            { F_Mask,                       CSS_COLOR( 140, 128, 150, 0.4 ) },
+            { B_Mask,                       CSS_COLOR( 110, 140, 140, 0.4 ) },
         };
 
 static std::map<int, COLOR4D> withContinuity()

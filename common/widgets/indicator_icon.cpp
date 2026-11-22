@@ -209,10 +209,11 @@ ROW_ICON_PROVIDER::ROW_ICON_PROVIDER( int aSizeDIP, wxWindow* aWindow )
     m_blankBitmap = wxBitmap( createBlankImage( toPhys( aSizeDIP ) ) );
     m_blankBitmap.SetScaleFactor( scale );
 
-    m_rightArrowBitmap = createArrow( toPhys( aSizeDIP ), scale, 1, wxColour( 64, 72, 255 ) );
+    // Continuity: the row in use is marked in gold, what is "act on" everywhere; the dot is quiet.
+    m_rightArrowBitmap = createArrow( toPhys( aSizeDIP ), scale, 1, wxColour( 226, 184, 77 ) );
     m_upArrowBitmap = createArrow( toPhys( aSizeDIP - 2 ), scale, 0, shadowColor );
     m_downArrowBitmap = createArrow( toPhys( aSizeDIP - 2 ), scale, 2, shadowColor );
-    m_dotBitmap = createDiamond( toPhys( aSizeDIP ), scale, wxColour( 128, 144, 255 ) );
+    m_dotBitmap = createDiamond( toPhys( aSizeDIP ), scale, wxColour( 162, 162, 157 ) );
     m_closedBitmap = createTurndown( toPhys( aSizeDIP ), scale, 1, textColor );
     m_openBitmap = createTurndown( toPhys( aSizeDIP ), scale, 2, textColor );
 }

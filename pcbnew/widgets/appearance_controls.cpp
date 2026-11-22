@@ -1282,6 +1282,9 @@ void APPEARANCE_CONTROLS::OnLayerChanged()
     {
         setting->ctl_panel->SetBackgroundColour( m_layerPanelColour );
         setting->ctl_indicator->SetIndicatorState( ROW_ICON_PROVIDER::STATE::OFF );
+
+        if( setting->ctl_text )
+            setting->ctl_text->SetForegroundColour( wxNullColour );
     }
 
     wxChar r = m_layerPanelColour.Red();
@@ -1313,6 +1316,10 @@ void APPEARANCE_CONTROLS::OnLayerChanged()
 
     newSetting->ctl_panel->SetBackgroundColour( wxColour( r, g, b ) );
     newSetting->ctl_indicator->SetIndicatorState( ROW_ICON_PROVIDER::STATE::ON );
+
+    // Continuity: the active layer's name is gold, the colour of what is acted on.
+    if( newSetting->ctl_text )
+        newSetting->ctl_text->SetForegroundColour( wxColour( 226, 184, 77 ) );
 
     Refresh();
 }
