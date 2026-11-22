@@ -629,10 +629,69 @@ void ROUTER_TOOL::showPairStatus()
 {
     view()->ClearPreview();
 
-    auto* placer = dynamic_cast<PNS::DIFF_PAIR_PLACER*>( m_router->Placer() );
+    PNS::PLACEMENT_ALGO* algo = m_router->Placer();
 
-    if( !placer || !m_router->RoutingInProgress() )
+    if( !algo || !m_router->RoutingInProgress() )
         return;
+
+    // Continuity's readout at the cursor (docs/kicad-look.md, "Important first"): what is being
+    // laid, how wide, on which layer, and how long this leg is; for a pair, both nets, the gap
+    // and how far one line runs ahead of the other.
+    ROUTER_STATUS_VIEW_ITEM* readout = new ROUTER_STATUS_VIEW_ITEM();
+    auto*                    pairPlacer = dynamic_cast<PNS::DIFF_PAIR_PLACER*>( algo );
+    const PNS::SIZES_SETTINGS& sizes = m_router->Sizes();
+
+    wxArrayString nets;
+
+    for( PNS::NET_HANDLE net : algo->CurrentNets() )
+    {
+        wxString name = m_iface->GetNetName( net );
+        nets.Add( name.IsEmpty() ? _( "no net" ) : UnescapeString( name ) );
+    }
+
+    readout->SetMessage( wxJoin( nets, '/', 0 ).Trim() );
+
+    if( pairPlacer )
+    {
+        readout->AddRow( _( "Width" ), frame()->MessageTextFromValue( sizes.DiffPairWidth() ) );
+        readout->AddRow( _( "Gap" ), frame()->MessageTextFromValue( sizes.DiffPairGap() ) );
+    }
+    else
+    {
+        readout->AddRow( _( "Width" ), frame()->MessageTextFromValue( sizes.TrackWidth() ) );
+    }
+
+    readout->AddRow( _( "Layer" ),
+                     board()->GetLayerName( m_iface->GetBoardLayerFromPNSLayer( algo->CurrentLayer() ) ) );
+
+    std::vector<long long> lengths;
+    const PNS::ITEM_SET    traces = algo->Traces();
+
+    for( const PNS::ITEM* item : traces.CItems() )
+    {
+        if( const PNS::LINE* line = dyn_cast<const PNS::LINE*>( item ) )
+            lengths.push_back( line->CLine().Length() );
+    }
+
+    if( pairPlacer && lengths.size() == 2 )
+    {
+        long long skew = std::llabs( lengths[0] - lengths[1] );
+        readout->AddRow( _( "This leg" ), frame()->MessageTextFromValue( std::max( lengths[0], lengths[1] ) ) );
+        readout->AddRow( _( "Skew here" ), frame()->MessageTextFromValue( skew ) );
+    }
+    else if( lengths.size() == 1 )
+    {
+        readout->AddRow( _( "This leg" ), frame()->MessageTextFromValue( lengths[0] ) );
+    }
+
+    if( !pairPlacer )
+    {
+        readout->SetPosition( frame()->GetToolManager()->GetMousePosition() );
+        view()->AddToPreview( readout );
+        return;
+    }
+
+    PNS::DIFF_PAIR_PLACER* placer = pairPlacer;
 
     using SYMMETRY = PNS::DIFF_PAIR_PLACER::SYMMETRY;
 
@@ -642,8 +701,8 @@ void ROUTER_TOOL::showPairStatus()
     switch( placer->Symmetry() )
     {
     case SYMMETRY::WAITING:
-        message = _( "Evening the pair's lines..." );
-        hint = _( "(Once the cursor rests.)" );
+        message = _( "Evening the lines" );
+        hint = _( "once the cursor rests." );
 
         if( !m_pairRestTimer )
         {
@@ -661,19 +720,21 @@ void ROUTER_TOOL::showPairStatus()
         break;
 
     case SYMMETRY::ONE_SIDED:
-        message = _( "Pair left one-sided here." );
-        hint = _( "(No symmetric shape keeps clear.)" );
+        readout->AddRow( _( "Shape" ), _( "one-sided here" ), true );
+        hint = _( "No symmetric shape keeps clear." );
         break;
 
     default:
-        return;
+        break;
     }
 
-    ROUTER_STATUS_VIEW_ITEM* statusItem = new ROUTER_STATUS_VIEW_ITEM();
-    statusItem->SetMessage( message );
-    statusItem->SetHint( hint );
-    statusItem->SetPosition( frame()->GetToolManager()->GetMousePosition() );
-    view()->AddToPreview( statusItem );
+    if( !message.IsEmpty() )
+        readout->SetHint( message + wxS( " " ) + hint );
+    else
+        readout->SetHint( hint );
+
+    readout->SetPosition( frame()->GetToolManager()->GetMousePosition() );
+    view()->AddToPreview( readout );
 }
 
 
@@ -2946,6 +3007,7 @@ void ROUTER_TOOL::performDragging( int aMode )
 
                         ROUTER_STATUS_VIEW_ITEM* statusItem = new ROUTER_STATUS_VIEW_ITEM();
                         statusItem->SetMessage( _( "Track violates DRC." ) );
+                        statusItem->SetProblem( true );
                         statusItem->SetHint( hint );
                         statusItem->SetPosition( frame()->GetToolManager()->GetMousePosition() );
                         view()->AddToPreview( statusItem );
@@ -3638,6 +3700,7 @@ int ROUTER_TOOL::InlineDrag( const TOOL_EVENT& aEvent )
 
                         ROUTER_STATUS_VIEW_ITEM* statusItem = new ROUTER_STATUS_VIEW_ITEM();
                         statusItem->SetMessage( _( "Track violates DRC." ) );
+                        statusItem->SetProblem( true );
                         statusItem->SetHint( hint );
                         statusItem->SetPosition( frame()->GetToolManager()->GetMousePosition() );
                         view()->AddToPreview( statusItem );

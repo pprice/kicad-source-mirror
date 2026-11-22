@@ -63,14 +63,35 @@ public:
         m_hint = aHint;
     }
 
+    /**
+     * A line of the readout under the message: a quiet label and its value, the value in the
+     * problem colour when aProblem (what the route is too close to, a skew past its limit).
+     */
+    void AddRow( const wxString& aLabel, const wxString& aValue, bool aProblem = false )
+    {
+        m_rows.push_back( { aLabel, aValue, aProblem } );
+    }
+
+    /// The message itself drawn as a problem: "Track violates DRC."
+    void SetProblem( bool aProblem ) { m_problem = aProblem; }
+
     const BOX2I ViewBBox() const override;
     std::vector<int> ViewGetLayers() const override;
     void ViewDraw( int aLayer, KIGFX::VIEW* aView ) const override;
 
 protected:
-    VECTOR2I m_pos;
-    wxString m_status;
-    wxString m_hint;
+    struct ROW
+    {
+        wxString label;
+        wxString value;
+        bool     problem;
+    };
+
+    VECTOR2I         m_pos;
+    wxString         m_status;
+    wxString         m_hint;
+    std::vector<ROW> m_rows;
+    bool             m_problem = false;
 };
 
 
