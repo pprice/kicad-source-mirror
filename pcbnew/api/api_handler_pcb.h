@@ -126,6 +126,12 @@ private:
 
     HANDLER_RESULT<RouteTrackResponse> handleRouteTrack( const HANDLER_CONTEXT<RouteTrack>& aCtx );
 
+    HANDLER_RESULT<RouteTrackResponse> handleRouteDiffPair( const HANDLER_CONTEXT<RouteDiffPair>& aCtx );
+
+    /// Lays a track or a pair with the router; RouteTrack and RouteDiffPair share their fields
+    template <typename REQUEST>
+    HANDLER_RESULT<RouteTrackResponse> routeWithRouter( const REQUEST& aRequest, bool aPair );
+
     HANDLER_RESULT<EditorStateResponse> handleGetEditorState( const HANDLER_CONTEXT<GetEditorState>& aCtx );
 
     HANDLER_RESULT<EditorStateResponse> handleTakeControl( const HANDLER_CONTEXT<TakeControl>& aCtx );

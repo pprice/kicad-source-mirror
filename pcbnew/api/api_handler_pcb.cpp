@@ -110,6 +110,7 @@
 #include <widgets/appearance_controls.h>
 #include <widgets/wx_infobar.h>
 #include <router/pns_kicad_iface.h>
+#include <router/pns_line.h>
 #include <router/pns_node.h>
 #include <router/pns_placement_algo.h>
 #include <router/pns_router.h>
@@ -165,6 +166,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<SetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleSetNetColors );
     registerHandler<GetClearances, ClearancesResponse>( &API_HANDLER_PCB::handleGetClearances );
     registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
+    registerHandler<RouteDiffPair, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteDiffPair );
     registerHandler<GetEditorState, EditorStateResponse>( &API_HANDLER_PCB::handleGetEditorState );
     registerHandler<TakeControl, EditorStateResponse>( &API_HANDLER_PCB::handleTakeControl );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
@@ -1882,10 +1884,24 @@ public:
 HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
         const HANDLER_CONTEXT<RouteTrack>& aCtx )
 {
+    return routeWithRouter( aCtx.Request, false );
+}
+
+
+HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteDiffPair(
+        const HANDLER_CONTEXT<RouteDiffPair>& aCtx )
+{
+    return routeWithRouter( aCtx.Request, true );
+}
+
+
+template <typename REQUEST>
+HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::routeWithRouter( const REQUEST& req, bool aPair )
+{
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
 
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( req.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
     auto badRequest =
@@ -1897,7 +1913,6 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
                 return tl::unexpected( e );
             };
 
-    const RouteTrack&      req = aCtx.Request;
     BOARD*                 board = this->board();
     BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
 
@@ -1979,7 +1994,8 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
 
         end = *found;
 
-        if( end->GetNetCode() != ( *start )->GetNetCode() )
+        // A pair's end may be on either line, which the router checks once it knows the pair
+        if( !aPair && end->GetNetCode() != ( *start )->GetNetCode() )
             return badRequest( "the end is on another net from the start" );
     }
     else if( req.waypoints().empty() )
@@ -2060,13 +2076,28 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
         router.ClearWorld();
         router.SyncWorld();
         router.LoadSettings( &settings );
-        router.SetMode( PNS::PNS_MODE_ROUTE_SINGLE );
+        router.SetMode( aPair ? PNS::PNS_MODE_ROUTE_DIFF_PAIR : PNS::PNS_MODE_ROUTE_SINGLE );
 
         PNS::ITEM* startItem = router.GetWorld()->FindItemByParent( *start );
         PNS::ITEM* endItem = end ? router.GetWorld()->FindItemByParent( end ) : nullptr;
 
         if( !startItem || ( end && !endItem ) )
             return badRequest( "the router does not know the start or end item" );
+
+        if( aPair )
+        {
+            PNS::NET_HANDLE coupled = router.GetRuleResolver()->DpCoupledNet( startItem->Net() );
+
+            if( !coupled )
+            {
+                return badRequest( fmt::format( "net '{}' has no other half: a pair's nets end + and -, "
+                                                "or P and N",
+                                                ( *start )->GetNetname().ToStdString() ) );
+            }
+
+            if( endItem && endItem->Net() != startItem->Net() && endItem->Net() != coupled )
+                return badRequest( "the end is on neither of the pair's nets" );
+        }
 
         int pnsLayer = iface.GetPNSLayerFromBoardLayer( layer );
 
@@ -2076,9 +2107,27 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
 
         if( req.has_width() )
         {
-            sizes.SetTrackWidth( req.width().value_nm() );
+            if( aPair )
+            {
+                sizes.SetDiffPairWidth( req.width().value_nm() );
+                sizes.SetDiffPairWidthSource( _( "API request" ) );
+            }
+            else
+            {
+                sizes.SetTrackWidth( req.width().value_nm() );
+                sizes.SetWidthSource( _( "API request" ) );
+            }
+
             sizes.SetTrackWidthIsExplicit( true );
-            sizes.SetWidthSource( _( "API request" ) );
+        }
+
+        if constexpr( std::is_same_v<REQUEST, RouteDiffPair> )
+        {
+            if( req.has_gap() )
+            {
+                sizes.SetDiffPairGap( req.gap().value_nm() );
+                sizes.SetDiffPairGapSource( _( "API request" ) );
+            }
         }
 
         if( req.has_via_diameter() )
@@ -2089,6 +2138,29 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
 
         sizes.SetViaType( VIATYPE::THROUGH );
         router.UpdateSizes( sizes );
+
+        // Where the head ends: a track's end, or the middle of a pair's two ends
+        auto headEnd =
+                [&]() -> VECTOR2I
+                {
+                    if( aPair )
+                    {
+                        std::vector<VECTOR2I> ends;
+
+                        for( const PNS::ITEM* item : router.Placer()->Traces().CItems() )
+                        {
+                            const PNS::LINE* line = static_cast<const PNS::LINE*>( item );
+
+                            if( item->OfKind( PNS::ITEM::LINE_T ) && line->PointCount() )
+                                ends.push_back( line->CLastPoint() );
+                        }
+
+                        if( ends.size() == 2 )
+                            return ( ends[0] + ends[1] ) / 2;
+                    }
+
+                    return router.Placer()->CurrentEnd();
+                };
 
         auto fail =
                 [&]( const wxString& aWhy )
@@ -2103,36 +2175,40 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
                     response.set_failure( why.ToUTF8() );
 
                     if( router.RoutingInProgress() )
-                        PackVector2( *response.mutable_reached(), router.Placer()->CurrentEnd() );
+                        PackVector2( *response.mutable_reached(), headEnd() );
                     else
                         PackVector2( *response.mutable_reached(), startPos );
 
                     router.StopRouting();
                 };
 
+        // Where the route was last fixed, which the head is led on from
+        VECTOR2I lastFixed = startPos;
+
         // Moves the head to a point as a hand would, in small steps from where the route was last
         // fixed (the router's posture follows the trail it is led along), and tries the other
-        // posture if that does not get there
+        // posture if that does not get there.  A track's head reaches a point or stops short of it;
+        // a pair's ends where its gateways fit, near the point, and the router says whether the
+        // pair fits there.
         auto moveTo =
                 [&]( const VECTOR2I& aP, PNS::ITEM* aItem ) -> bool
                 {
-                    const VECTOR2I from = router.Placer()->CurrentStart();
-                    const VECTOR2I d = aP - from;
+                    const VECTOR2I d = aP - lastFixed;
                     const int      step = pcbIUScale.mmToIU( 0.2 );
                     const int      count = std::max( 1, KiROUND( d.EuclideanNorm() / step ) );
 
                     for( int i = 1; i < count; ++i )
-                        router.Move( from + d * i / count, nullptr );
+                        router.Move( lastFixed + d * i / count, nullptr );
 
-                    router.Move( aP, aItem );
+                    bool fits = router.Move( aP, aItem );
 
-                    if( router.Placer()->CurrentEnd() == aP )
+                    if( aPair ? fits : router.Placer()->CurrentEnd() == aP )
                         return true;
 
                     router.FlipPosture();
-                    router.Move( aP, aItem );
+                    fits = router.Move( aP, aItem );
 
-                    return router.Placer()->CurrentEnd() == aP;
+                    return aPair ? fits : router.Placer()->CurrentEnd() == aP;
                 };
 
         if( !router.StartRouting( startPos, startItem, pnsLayer ) )
@@ -2195,15 +2271,23 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
                     break;
                 }
 
+                // A track's fixed part waits for the end; a pair's is committed as it is fixed
+                size_t addedBefore = iface.m_added.size();
+
                 router.FixRoute( p, nullptr, false, false );
 
-                if( router.Placer()->CurrentStart() != p )
+                bool fixed = aPair ? iface.m_added.size() > addedBefore
+                                   : router.Placer()->CurrentStart() == p;
+
+                if( !fixed )
                 {
                     fail( wxString::Format( wxS( "waypoint %d: the route breaks a rule there" ),
                                             index ) );
                     stopped = true;
                     break;
                 }
+
+                lastFixed = p;
 
                 if( via )
                     router.SwitchLayer( iface.GetPNSLayerFromBoardLayer( next ) );
@@ -2233,6 +2317,50 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
                 if( !iface.m_committed )
                     response.set_failure( "the router laid nothing" );
 
+                // The router keeps clear of other nets' copper as it goes, but not a pair's two
+                // lines of each other's pads: a pair that arrives crossed shorts there.  So all
+                // that was laid is checked before any of it is kept.
+                for( BOARD_ITEM* item : iface.m_added )
+                {
+                    PNS::ITEM* laid = router.GetWorld()->FindItemByParent( item );
+
+                    if( !laid )
+                        continue;
+
+                    auto obstacle = router.GetWorld()->CheckColliding( laid );
+
+                    if( !obstacle )
+                        continue;
+
+                    BOARD_ITEM* hit = obstacle->m_item->Parent();
+                    wxString    what = hit ? hit->GetFriendlyName() : wxString( wxS( "a keep-out" ) );
+
+                    if( hit && hit->Type() == PCB_PAD_T )
+                    {
+                        PAD* pad = static_cast<PAD*>( hit );
+                        what = wxString::Format( wxS( "%s pad %s" ),
+                                                 pad->GetParentFootprint()->GetReference(),
+                                                 pad->GetNumber() );
+                    }
+
+                    if( BOARD_CONNECTED_ITEM* connected = dynamic_cast<BOARD_CONNECTED_ITEM*>( hit ) )
+                        what << wxS( " on " ) << connected->GetNetname();
+
+                    wxString why = wxString::Format( wxS( "the route would come too near %s" ), what );
+
+                    // The other line's own pad: the pair is wider than the pins it meets, or its
+                    // lines swap sides between its ends
+                    if( aPair && obstacle->m_item->Net() == router.GetRuleResolver()->DpCoupledNet( laid->Net() ) )
+                    {
+                        why << wxS( ", the pair's other line: the pair is wider than the pins it meets "
+                                    "there, or its lines swap sides between its ends" );
+                    }
+
+                    response.set_completed( false );
+                    response.set_failure( why.ToUTF8() );
+                    break;
+                }
+
                 PackVector2( *response.mutable_reached(), endPos );
 
                 for( BOARD_ITEM* item : iface.m_added )
@@ -2254,7 +2382,7 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
 
     if( response.completed() && !req.dry_run() )
     {
-        commit->Push( _( "Route Track" ) );
+        commit->Push( aPair ? _( "Route Differential Pair" ) : _( "Route Track" ) );
         onModified();
     }
     else
