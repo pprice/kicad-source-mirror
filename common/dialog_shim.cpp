@@ -47,6 +47,7 @@
 #include <wx/checklst.h>
 #include <wx/dataview.h>
 #include <wx/bmpbuttn.h>
+#include <wx/button.h>
 #include <wx/textctrl.h>
 #include <wx/stc/stc.h>
 #include <wx/combobox.h>
@@ -363,6 +364,15 @@ void DIALOG_SHIM::onInitDialog( wxInitDialogEvent& aEvent )
 #endif
 
     LoadControlState();
+
+    // Continuity: the dialog's default button (OK, Run, Apply) is the one gold thing in it, what
+    // is acted on. A colour of its own makes wxWidgets draw the button itself.
+    if( wxButton* button = dynamic_cast<wxButton*>( GetDefaultItem() ) )
+    {
+        button->SetBackgroundColour( wxColour( 226, 184, 77 ) );
+        button->SetForegroundColour( wxColour( 17, 17, 17 ) );
+    }
+
     aEvent.Skip();
 }
 

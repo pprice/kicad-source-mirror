@@ -16,5 +16,8 @@
         "ngspice"
       ]
     }
+  ],
+  "overlay-ports": [
+    "./tools/vcpkg-overlay-ports"
   ]
 }
