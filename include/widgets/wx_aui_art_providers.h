@@ -47,6 +47,12 @@ public:
     void DrawButton( wxDC& aDc, wxWindow* aWindow, const wxAuiToolBarItem& aItem,
                      const wxRect& aRect ) override;
 
+    /// Flat: one surface, no gradient or theme edge, a hairline between groups, no gripper.
+    void DrawBackground( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect ) override;
+    void DrawPlainBackground( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect ) override;
+    void DrawSeparator( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect ) override;
+    void DrawGripper( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect ) override;
+
     void UpdateColoursFromSystem() override;
 
     int ShowDropDown( wxWindow* wnd, const wxAuiToolBarItemArray& items ) override;
@@ -66,10 +72,7 @@ public:
 class WX_AUI_TAB_ART : public wxAuiDefaultTabArt
 {
 public:
-    WX_AUI_TAB_ART() :
-            wxAuiDefaultTabArt()
-    {
-    }
+    WX_AUI_TAB_ART();
 
     wxAuiTabArt* Clone() override
     {
@@ -77,6 +80,10 @@ public:
     }
 
     void SetSizingInfo( const wxSize& tabCtrlSize, size_t tabCount, wxWindow* wnd = nullptr ) override;
+
+    /// Flat tabs on one surface; the active one bold and underlined in the accent.
+    void DrawBackground( wxDC& dc, wxWindow* wnd, const wxRect& rect ) override;
+    int  DrawPageTab( wxDC& dc, wxWindow* wnd, wxAuiNotebookPage& page, const wxRect& rect ) override;
 };
 #else
 class WX_AUI_TAB_ART : public wxAuiGenericTabArt

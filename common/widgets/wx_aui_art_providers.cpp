@@ -23,6 +23,10 @@
 #include <wx/bitmap.h>
 #include <wx/dc.h>
 #include <wx/settings.h>
+#include <wx/fontenum.h>
+#include <wx/image.h>
+
+#include <map>
 
 #include <kiplatform/ui.h>
 #include <pgm_base.h>
@@ -30,6 +34,86 @@
 #include <widgets/panel_notebook_base.h>
 #include <widgets/wx_aui_art_providers.h>
 #include <gal/color4d.h>
+
+/// a moved toward b by t (0 to 1).
+static wxColour blend( const wxColour& a, const wxColour& b, double t )
+{
+    auto mix = [t]( unsigned char x, unsigned char y )
+    {
+        return static_cast<unsigned char>( x + ( y - x ) * t + 0.5 );
+    };
+
+    return wxColour( mix( a.Red(), b.Red() ), mix( a.Green(), b.Green() ),
+                     mix( a.Blue(), b.Blue() ) );
+}
+
+
+/// The surface toolbars, tabs and pane captions sit on.
+static wxColour artFace()
+{
+    return wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE );
+}
+
+
+/// What is acted on: the highlight, which dark mode makes Continuity's gold.
+static wxColour artAccent()
+{
+    return wxSystemSettings::GetColour( wxSYS_COLOUR_HIGHLIGHT );
+}
+
+
+/// A hairline: the surface moved a little toward the ink.
+static wxColour artRule()
+{
+    return blend( artFace(), wxSystemSettings::GetColour( wxSYS_COLOUR_BTNTEXT ), 0.12 );
+}
+
+
+/**
+ * The icon drawn in one colour, its light and dark kept as strength so the drawing still reads:
+ * the tool in use shows in the accent.  Kept per bitmap, since a toolbar repaints often.
+ */
+static wxBitmap tinted( const wxBitmap& aBitmap, const wxColour& aColour )
+{
+    // Each entry holds its source too, so the data its key points at stays alive and no other
+    // bitmap can take that address while the entry is kept.
+    static std::map<std::pair<const void*, wxUint32>, std::pair<wxBitmap, wxBitmap>> cache;
+
+    const auto key = std::make_pair( static_cast<const void*>( aBitmap.GetRefData() ),
+                                     static_cast<wxUint32>( aColour.GetRGB() ) );
+
+    if( auto it = cache.find( key ); it != cache.end() )
+        return it->second.second;
+
+    wxImage image = aBitmap.ConvertToImage();
+
+    if( !image.HasAlpha() )
+        image.InitAlpha();
+
+    unsigned char* rgb = image.GetData();
+    const int      count = image.GetWidth() * image.GetHeight();
+
+    for( int i = 0; i < count; ++i )
+    {
+        const double lum = ( 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] ) / 255.0;
+        const double k = 0.55 + 0.45 * lum;
+
+        rgb[0] = static_cast<unsigned char>( aColour.Red() * k );
+        rgb[1] = static_cast<unsigned char>( aColour.Green() * k );
+        rgb[2] = static_cast<unsigned char>( aColour.Blue() * k );
+        rgb += 3;
+    }
+
+    wxBitmap out( image );
+    out.SetScaleFactor( aBitmap.GetScaleFactor() );
+
+    if( cache.size() > 512 )
+        cache.clear();
+
+    cache[key] = std::make_pair( aBitmap, out );
+    return out;
+}
+
 
 #if wxCHECK_VERSION( 3, 3, 0 )
 wxSize WX_AUI_TOOLBAR_ART::GetToolSize( wxReadOnlyDC& aDc, wxWindow* aWindow,
@@ -81,7 +165,10 @@ wxSize WX_AUI_TOOLBAR_ART::GetToolSize( wxDC& aDc, wxWindow* aWindow,
         width += dropdownWidth + aWindow->FromDIP( 4 );
     }
 
-    return wxSize( width, height );
+    // Room round each icon, so the rounded ground of a hovered or active tool has a margin.
+    const int room = aWindow->FromDIP( 4 );
+
+    return wxSize( width + room, height + room );
 }
 
 
@@ -130,41 +217,43 @@ void WX_AUI_TOOLBAR_ART::DrawButton( wxDC& aDc, wxWindow* aWindow, const wxAuiTo
         bmpY = aRect.y + ( aRect.height / 2 ) - ( bmpSize.y / 2 );
     }
 
-    bool isThemeDark = KIPLATFORM::UI::IsDarkTheme();
+    // Flat, as Continuity's page draws a tool: nothing at rest, a faint lift under the pointer,
+    // and the tool in use with its icon in the accent on a faint ground of it. Rounded, and never
+    // a bar down one edge.
+    const int  state = aItem.GetState();
+    const bool enabled = !( state & wxAUI_BUTTON_STATE_DISABLED );
+    const bool checked = enabled && ( state & wxAUI_BUTTON_STATE_CHECKED );
+    const bool hover = enabled && ( ( state & wxAUI_BUTTON_STATE_HOVER ) || aItem.IsSticky() );
+    const bool pressed = enabled && ( state & wxAUI_BUTTON_STATE_PRESSED );
 
-    if( !( aItem.GetState() & wxAUI_BUTTON_STATE_DISABLED ) )
+    const wxColour face = artFace();
+    const wxColour ink = wxSystemSettings::GetColour( wxSYS_COLOUR_BTNTEXT );
+    const wxColour accent = artAccent();
+    wxColour       fill;
+
+    if( pressed )
+        fill = blend( face, ink, 0.16 );
+    else if( checked )
+        fill = blend( face, accent, hover ? 0.26 : 0.17 );
+    else if( hover )
+        fill = blend( face, ink, 0.09 );
+
+    if( fill.IsOk() )
     {
-        if( aItem.GetState() & wxAUI_BUTTON_STATE_PRESSED )
-        {
-            aDc.SetPen( wxPen( m_highlightColour ) );
-            aDc.SetBrush( wxBrush( m_highlightColour.ChangeLightness( isThemeDark ? 20 : 150 ) ) );
-            aDc.DrawRectangle( aRect );
-        }
-        else if( ( aItem.GetState() & wxAUI_BUTTON_STATE_HOVER ) || aItem.IsSticky() )
-        {
-            aDc.SetPen( wxPen( m_highlightColour ) );
-            aDc.SetBrush( wxBrush( m_highlightColour.ChangeLightness( isThemeDark ? 40 : 170 ) ) );
-
-            // draw an even lighter background for checked item hovers (since
-            // the hover background is the same color as the check background)
-            if( aItem.GetState() & wxAUI_BUTTON_STATE_CHECKED )
-                aDc.SetBrush(
-                        wxBrush( m_highlightColour.ChangeLightness( isThemeDark ? 50 : 180 ) ) );
-
-            aDc.DrawRectangle( aRect );
-        }
-        else if( aItem.GetState() & wxAUI_BUTTON_STATE_CHECKED )
-        {
-            // it's important to put this code in an else statement after the
-            // hover, otherwise hovers won't draw properly for checked items
-            aDc.SetPen( wxPen( m_highlightColour ) );
-            aDc.SetBrush( wxBrush( m_highlightColour.ChangeLightness( isThemeDark ? 40 : 170 ) ) );
-            aDc.DrawRectangle( aRect );
-        }
+        wxRect r = aRect;
+        r.Deflate( aWindow->FromDIP( 1 ) );
+        aDc.SetPen( *wxTRANSPARENT_PEN );
+        aDc.SetBrush( wxBrush( fill ) );
+        aDc.DrawRoundedRectangle( r, aWindow->FromDIP( 6 ) );
     }
 
     if( bmp.IsOk() )
-        aDc.DrawBitmap( bmp, bmpX, bmpY, true );
+    {
+        if( checked )
+            aDc.DrawBitmap( tinted( bmp, accent ), bmpX, bmpY, true );
+        else
+            aDc.DrawBitmap( bmp, bmpX, bmpY, true );
+    }
 
     // set the item's text color based on if it is disabled
     aDc.SetTextForeground( wxSystemSettings::GetColour( wxSYS_COLOUR_BTNTEXT ) );
@@ -178,6 +267,45 @@ void WX_AUI_TOOLBAR_ART::DrawButton( wxDC& aDc, wxWindow* aWindow, const wxAuiTo
     {
         aDc.DrawText( aItem.GetLabel(), textX, textY );
     }
+}
+
+
+void WX_AUI_TOOLBAR_ART::DrawBackground( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect )
+{
+    aDc.SetPen( *wxTRANSPARENT_PEN );
+    aDc.SetBrush( wxBrush( artFace() ) );
+    aDc.DrawRectangle( aRect );
+}
+
+
+void WX_AUI_TOOLBAR_ART::DrawPlainBackground( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect )
+{
+    DrawBackground( aDc, aWindow, aRect );
+}
+
+
+void WX_AUI_TOOLBAR_ART::DrawSeparator( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect )
+{
+    aDc.SetPen( wxPen( artRule(), aWindow->FromDIP( 1 ) ) );
+
+    if( aRect.width < aRect.height )
+    {
+        const int x = aRect.x + aRect.width / 2;
+        const int inset = aRect.height / 4;
+        aDc.DrawLine( x, aRect.y + inset, x, aRect.GetBottom() - inset );
+    }
+    else
+    {
+        const int y = aRect.y + aRect.height / 2;
+        const int inset = aRect.width / 4;
+        aDc.DrawLine( aRect.x + inset, y, aRect.GetRight() - inset, y );
+    }
+}
+
+
+void WX_AUI_TOOLBAR_ART::DrawGripper( wxDC& aDc, wxWindow* aWindow, const wxRect& aRect )
+{
+    DrawBackground( aDc, aWindow, aRect );
 }
 
 
@@ -320,11 +448,63 @@ WX_AUI_DOCK_ART::WX_AUI_DOCK_ART() :
     SetColour( wxAUI_DOCKART_INACTIVE_CAPTION_TEXT_COLOUR,
                wxSystemSettings::GetColour( wxSYS_COLOUR_BTNTEXT ) );
 
+    // Panes and their captions on the one surface, hairlines between them: no raised title bars.
+    SetColour( wxAUI_DOCKART_BACKGROUND_COLOUR, artFace() );
+    SetColour( wxAUI_DOCKART_ACTIVE_CAPTION_COLOUR, artFace() );
+    SetColour( wxAUI_DOCKART_INACTIVE_CAPTION_COLOUR, artFace() );
+    SetColour( wxAUI_DOCKART_SASH_COLOUR, artFace() );
+    SetColour( wxAUI_DOCKART_BORDER_COLOUR, artRule() );
+    SetColour( wxAUI_DOCKART_GRIPPER_COLOUR, artRule() );
+    if( wxFontEnumerator::IsValidFacename( wxS( "Atkinson Hyperlegible Next" ) ) )
+        m_captionFont.SetFaceName( wxS( "Atkinson Hyperlegible Next" ) );
+
+    m_captionFont = m_captionFont.Bold();
+
     // Turn off the ridiculous looking gradient
     m_gradientType = wxAUI_GRADIENT_NONE;
 }
 
 #if wxCHECK_VERSION( 3, 3, 0 )
+WX_AUI_TAB_ART::WX_AUI_TAB_ART() :
+        wxAuiDefaultTabArt()
+{
+    SetColour( artFace() );
+    SetActiveColour( artFace() );
+}
+
+
+void WX_AUI_TAB_ART::DrawBackground( wxDC& dc, wxWindow* wnd, const wxRect& rect )
+{
+    dc.SetPen( *wxTRANSPARENT_PEN );
+    dc.SetBrush( wxBrush( artFace() ) );
+    dc.DrawRectangle( rect );
+
+    dc.SetPen( wxPen( artRule(), wnd->FromDIP( 1 ) ) );
+    dc.DrawLine( rect.x, rect.GetBottom(), rect.GetRight() + 1, rect.GetBottom() );
+}
+
+
+int WX_AUI_TAB_ART::DrawPageTab( wxDC& dc, wxWindow* wnd, wxAuiNotebookPage& page,
+                                 const wxRect& rect )
+{
+    int extent = wxAuiDefaultTabArt::DrawPageTab( dc, wnd, page, rect );
+
+    if( page.active )
+    {
+        // The tab in front: underlined in the accent, the whole width of its caption.
+        const int thick = wnd->FromDIP( 2 );
+        const int inset = wnd->FromDIP( 6 );
+        wxRect    tab = page.rect;
+
+        dc.SetPen( *wxTRANSPARENT_PEN );
+        dc.SetBrush( wxBrush( artAccent() ) );
+        dc.DrawRectangle( tab.x + inset, tab.GetBottom() - thick + 1, tab.width - 2 * inset, thick );
+    }
+
+    return extent;
+}
+
+
 void WX_AUI_TAB_ART::SetSizingInfo( const wxSize& tabCtrlSize, size_t tabCount, wxWindow* wnd )
 {
     // SetSizingInfo is called after adding pages.
