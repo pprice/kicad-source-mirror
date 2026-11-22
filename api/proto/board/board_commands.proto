@@ -463,6 +463,53 @@ message RouteTrackResponse
 }
 
 /*
+ * Pictures of the board
+ */
+
+// Draws the board to a PNG, as the editor draws it: its colour theme and net colours, without
+// moving the editor's view or changing what it shows.  Works headless too.
+// Returns RenderViewResponse.
+message RenderView
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  // In the editor: the canvas exactly as it is on the screen, every other field but path ignored
+  bool screen = 2;
+
+  // The part of the board to draw.  Absent: what the editor's view shows, or headless the whole
+  // board with a little room round it
+  kiapi.common.types.Box2 area = 3;
+
+  // The picture's width in pixels; its height follows the area.  Absent: 1600
+  int32 width = 4;
+
+  // The layers to draw, with their pads, vias and zones.  Absent: those the editor shows, or
+  // headless every copper layer and the board's outline
+  repeated kiapi.board.types.BoardLayer layers = 5;
+
+  // Drawn in front, the others faded as the editor's high contrast fades them
+  kiapi.board.types.BoardLayer active_layer = 6;
+
+  // Nets drawn bright, all else dimmed, as the editor highlights a net
+  repeated string highlight_nets = 7;
+
+  // Where to write the PNG.  Absent: the picture comes back in the answer
+  string path = 8;
+}
+
+message RenderViewResponse
+{
+  // The PNG, unless it was written to a path
+  bytes png = 1;
+
+  int32 width = 2;
+  int32 height = 3;
+
+  // The part of the board it shows
+  kiapi.common.types.Box2 area = 4;
+}
+
+/*
  * Clearances
  */
 

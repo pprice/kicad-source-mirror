@@ -121,6 +121,13 @@
 #include <drc/rule_editor/drc_re_rule_loader.h>
 #include <trace_helpers.h>
 #include <wx/ffile.h>
+#include <wx/dcclient.h>
+#include <wx/dcmemory.h>
+#include <wx/mstream.h>
+#include <gal/cairo/cairo_print.h>
+#include <pcbnew_settings.h>
+#include <settings/settings_manager.h>
+#include <view/view.h>
 
 using namespace kiapi::common::commands;
 using namespace kiapi::board::commands;
@@ -169,6 +176,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
     registerHandler<RouteDiffPair, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteDiffPair );
     registerHandler<DragTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleDragTrack );
+    registerHandler<RenderView, RenderViewResponse>( &API_HANDLER_PCB::handleRenderView );
     registerHandler<GetEditorState, EditorStateResponse>( &API_HANDLER_PCB::handleGetEditorState );
     registerHandler<TakeControl, EditorStateResponse>( &API_HANDLER_PCB::handleTakeControl );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
@@ -2649,6 +2657,361 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleDragTrack(
     else
     {
         commit->Revert();
+    }
+
+    return response;
+}
+
+
+namespace
+{
+
+/// Shows a board layer in a view with the item layers that draw on it, as printing does
+void showLayer( KIGFX::VIEW& aView, PCB_LAYER_ID aLayer )
+{
+    aView.SetLayerVisible( aLayer, true );
+    aView.SetLayerVisible( ZONE_LAYER_FOR( aLayer ), true );
+
+    if( IsCopperLayer( aLayer ) )
+    {
+        aView.SetLayerVisible( PAD_COPPER_LAYER_FOR( aLayer ), true );
+        aView.SetLayerVisible( VIA_COPPER_LAYER_FOR( aLayer ), true );
+        aView.SetLayerVisible( GetNetnameLayer( aLayer ), true );
+    }
+}
+
+
+/// The view layers that go with every board layer drawn: the kinds of item, holes and net names
+void showItemLayers( KIGFX::VIEW& aView )
+{
+    const int itemLayers[] = {
+        LAYER_PADS, LAYER_TRACKS, LAYER_VIAS, LAYER_ZONES, LAYER_FILLED_SHAPES,
+        LAYER_FOOTPRINTS_FR, LAYER_FOOTPRINTS_BK, LAYER_FP_TEXT, LAYER_FP_VALUES,
+        LAYER_FP_REFERENCES, LAYER_VIA_THROUGH, LAYER_VIA_BLIND, LAYER_VIA_BURIED,
+        LAYER_VIA_MICROVIA, LAYER_VIA_HOLES, LAYER_VIA_HOLEWALLS,
+        LAYER_PAD_PLATEDHOLES, LAYER_PAD_HOLEWALLS, LAYER_NON_PLATEDHOLES,
+        LAYER_PAD_NETNAMES, LAYER_VIA_NETNAMES, LAYER_PAD_FR_NETNAMES,
+        LAYER_PAD_BK_NETNAMES, LAYER_RATSNEST
+    };
+
+    for( int layer : itemLayers )
+        aView.SetLayerVisible( layer, true );
+}
+
+
+/// Puts an image into a PNG's bytes
+std::string encodePng( wxImage& aImage )
+{
+    wxMemoryOutputStream stream;
+
+    if( !aImage.SaveFile( stream, wxBITMAP_TYPE_PNG ) )
+        return {};
+
+    std::string bytes( stream.GetSize(), '\0' );
+    stream.CopyTo( bytes.data(), bytes.size() );
+    return bytes;
+}
+
+} // namespace
+
+
+HANDLER_RESULT<RenderViewResponse> API_HANDLER_PCB::handleRenderView( const HANDLER_CONTEXT<RenderView>& aCtx )
+{
+    // A read: it changes nothing the editor shows, so it answers while a tool is active
+
+    const RenderView& req = aCtx.Request;
+
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( req.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    auto badRequest =
+            []( const std::string& aMessage ) -> tl::unexpected<ApiResponseStatus>
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( aMessage );
+                return tl::unexpected( e );
+            };
+
+    if( !wxImage::FindHandler( wxBITMAP_TYPE_PNG ) )
+        wxImage::AddHandler( new wxPNGHandler );
+
+    BOARD*             board = this->board();
+    RenderViewResponse response;
+    wxImage            image;
+    BOX2I              area;
+
+    // Read before anything is drawn: once a view of our own holds the board's items, it must let
+    // go of them again
+    std::vector<PCB_LAYER_ID> layers;
+    std::set<int>             highlight;
+
+    for( int layer : req.layers() )
+    {
+        PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>(
+                static_cast<board::types::BoardLayer>( layer ) );
+
+        if( id == UNDEFINED_LAYER )
+            return badRequest( "a layer is not known" );
+
+        layers.push_back( id );
+    }
+
+    for( const std::string& name : req.highlight_nets() )
+    {
+        NETINFO_ITEM* net = board->GetNetInfo().GetNetItem( wxString::FromUTF8( name ) );
+
+        if( !net )
+            return badRequest( fmt::format( "no net {} on the board", name ) );
+
+        highlight.insert( net->GetNetCode() );
+    }
+
+    PCB_LAYER_ID active = UNDEFINED_LAYER;
+
+    if( req.active_layer() != board::types::BoardLayer::BL_UNKNOWN )
+        active = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( req.active_layer() );
+
+    if( req.screen() )
+    {
+        if( !frame() )
+            return badRequest( "there is no screen headless" );
+
+        EDA_DRAW_PANEL_GAL* canvas = frame()->GetCanvas();
+
+        // What the canvas shows, read back from it, or failing that from the window
+        if( !canvas->GetScreenshot( image ) )
+        {
+            wxSize     size = canvas->GetClientSize();
+            wxClientDC dc( canvas );
+            wxBitmap   bitmap( size.x, size.y );
+            wxMemoryDC memdc;
+
+            memdc.SelectObject( bitmap );
+            memdc.Blit( 0, 0, size.x, size.y, &dc, 0, 0 );
+            memdc.SelectObject( wxNullBitmap );
+            image = bitmap.ConvertToImage();
+        }
+
+        BOX2D viewport = canvas->GetView()->GetViewport();
+        area = BOX2I( VECTOR2I( viewport.GetOrigin() ), VECTOR2L( viewport.GetSize() ) );
+    }
+    else
+    {
+        if( req.has_area() )
+            area = UnpackBox2( req.area() );
+        else if( frame() )
+        {
+            BOX2D viewport = frame()->GetCanvas()->GetView()->GetViewport();
+            area = BOX2I( VECTOR2I( viewport.GetOrigin() ), VECTOR2L( viewport.GetSize() ) );
+        }
+        else
+        {
+            area = board->ComputeBoundingBox( false );
+            area.Inflate( pcbIUScale.mmToIU( 2 ) );
+        }
+
+        if( area.GetWidth() <= 0 || area.GetHeight() <= 0 )
+            return badRequest( "the area to draw is empty" );
+
+        const int most = 8000;
+        int       width = req.width() > 0 ? req.width() : 1600;
+        int       height = KiROUND( (double) width * area.GetHeight() / area.GetWidth() );
+
+        if( width > most || height > most )
+        {
+            double shrink = (double) most / std::max( width, height );
+            width = std::max( 1, KiROUND( width * shrink ) );
+            height = std::max( 1, KiROUND( height * shrink ) );
+        }
+
+        // Cairo hands the picture back with its alpha, which the image must have room for
+        image = wxImage( width, height, false );
+        image.SetAlpha();
+
+        const double   ppi = width / ( pcbIUScale.IUTomm( area.GetWidth() ) / 25.4 );
+        const VECTOR2D sheetIn( width / ppi, height / ppi );
+
+        KIGFX::GAL_DISPLAY_OPTIONS options;
+        options.antialiasing_mode = KIGFX::GAL_ANTIALIASING_MODE::AA_HIGHQUALITY;
+
+        std::unique_ptr<KIGFX::CAIRO_PRINT_GAL> gal = KIGFX::CAIRO_PRINT_GAL::Create( options, &image, ppi );
+
+        if( !gal )
+            return badRequest( "Cairo could not make a picture that size" );
+
+        {
+            auto painter = std::make_unique<KIGFX::PCB_PAINTER>( gal.get(), FRAME_PCB_EDITOR );
+            std::unique_ptr<KIGFX::VIEW> view;
+            KIGFX::PCB_RENDER_SETTINGS*  settings = painter->GetSettings();
+
+            if( frame() )
+            {
+                // The editor's own items, layers and order, shared and not moved, as printing
+                // shares them; and its colours, net colours, display modes and highlight
+                KIGFX::VIEW* editorView = frame()->GetCanvas()->GetView();
+
+                view = editorView->DataReference();
+                view->SetGAL( gal.get() );
+                view->SetPainter( painter.get() );
+                *settings = *static_cast<KIGFX::PCB_RENDER_SETTINGS*>( editorView->GetPainter()->GetSettings() );
+            }
+            else
+            {
+                // A view adds an item through its GAL and painter, so it has them first
+                view = std::make_unique<KIGFX::VIEW>();
+                view->SetGAL( gal.get() );
+                view->SetPainter( painter.get() );
+                ApplyPcbGalLayerOrder( view.get() );
+                ApplyPcbGalLayerDeps( view.get() );
+
+                board->CacheTriangulation();
+
+                std::vector<KIGFX::VIEW_ITEM*> items;
+
+                for( BOARD_ITEM* item : board->GetItemSet() )
+                {
+                    if( item->Type() == PCB_CONSTRAINT_T )
+                        continue;
+
+                    items.push_back( item );
+
+                    if( item->Type() == PCB_FOOTPRINT_T )
+                    {
+                        static_cast<FOOTPRINT*>( item )->RunOnChildren(
+                                [&items]( BOARD_ITEM* child )
+                                {
+                                    if( child->Type() != PCB_CONSTRAINT_T )
+                                        items.push_back( child );
+                                },
+                                RECURSE_MODE::NO_RECURSE );
+                    }
+                }
+
+                view->AddBatch( items );
+
+                PCBNEW_SETTINGS* cfg = GetAppSettings<PCBNEW_SETTINGS>( "pcbnew" );
+                settings->LoadColors( ::GetColorSettings( cfg ? cfg->m_ColorTheme : DEFAULT_THEME ) );
+                settings->LoadDisplayOptions( PCB_DISPLAY_OPTIONS() );
+                settings->SetNetColorMode( NET_COLOR_MODE::ALL );
+
+                for( const auto& [name, color] : netColors() )
+                {
+                    if( NETINFO_ITEM* net = board->GetNetInfo().GetNetItem( name ) )
+                        settings->GetNetColorMap()[net->GetNetCode()] = color;
+                }
+
+                if( layers.empty() )
+                {
+                    for( int i = 0; i < KIGFX::VIEW::VIEW_MAX_LAYERS; ++i )
+                        view->SetLayerVisible( i, false );
+
+                    for( PCB_LAYER_ID layer : board->GetEnabledLayers().CuStack() )
+                        showLayer( *view, layer );
+
+                    showLayer( *view, Edge_Cuts );
+                    showItemLayers( *view );
+                }
+            }
+
+            // Set once: a GAL set again recaches every item, and the editor's items are shared
+            view->SetScaleLimits( 10e9, 0.0001 );
+            view->SetScale( 1.0 );
+
+            // Drawn straight to the picture, never from the editor's cached groups
+            for( int i = 0; i < KIGFX::VIEW::VIEW_MAX_LAYERS; ++i )
+                view->SetLayerTarget( i, KIGFX::TARGET_NONCACHED );
+
+            if( !layers.empty() )
+            {
+                for( int i = 0; i < KIGFX::VIEW::VIEW_MAX_LAYERS; ++i )
+                    view->SetLayerVisible( i, false );
+
+                for( PCB_LAYER_ID layer : layers )
+                    showLayer( *view, layer );
+
+                showItemLayers( *view );
+            }
+
+            // The canvas can fade whole layers itself; a picture has the painter fade each item
+            settings->SetCanvasFadedLayers( {} );
+
+            if( active != UNDEFINED_LAYER )
+            {
+                settings->SetActiveLayer( active );
+                settings->ClearHighContrastLayers();
+                settings->SetLayerIsHighContrast( active );
+                settings->SetHighContrast( true );
+                settings->m_ContrastModeDisplay = HIGH_CONTRAST_MODE::DIMMED;
+
+                view->ClearTopLayers();
+                view->SetTopLayer( active );
+
+                if( IsCopperLayer( active ) )
+                {
+                    const int withActive[] = {
+                        PAD_COPPER_LAYER_FOR( active ), VIA_COPPER_LAYER_FOR( active ),
+                        ZONE_LAYER_FOR( active ), GetNetnameLayer( active ),
+                        LAYER_PAD_NETNAMES, LAYER_VIA_NETNAMES,
+                        LAYER_PAD_PLATEDHOLES, LAYER_PAD_HOLEWALLS,
+                        LAYER_NON_PLATEDHOLES, LAYER_VIA_THROUGH,
+                        LAYER_VIA_BLIND, LAYER_VIA_BURIED,
+                        LAYER_VIA_MICROVIA, LAYER_VIA_HOLES,
+                        LAYER_VIA_HOLEWALLS, LAYER_RATSNEST
+                    };
+
+                    for( int layer : withActive )
+                    {
+                        settings->SetLayerIsHighContrast( layer );
+                        view->SetTopLayer( layer );
+                    }
+
+                    settings->SetLayerIsHighContrast( active == B_Cu ? LAYER_FOOTPRINTS_BK
+                                                                     : LAYER_FOOTPRINTS_FR );
+                }
+            }
+
+            if( !highlight.empty() )
+                settings->SetHighlight( highlight, true );
+
+            gal->SetWorldUnitLength( 0.001 / pcbIUScale.IU_PER_MM / 0.0254 );
+            gal->SetSheetSize( sheetIn );
+            gal->SetNativePaperSize( sheetIn, gal->GetPrintCtx()->HasNativeLandscapeRotation() );
+            gal->SetLookAtPoint( area.Centre() );
+            gal->SetZoomFactor( 1.0 );
+            gal->SetClearColor( settings->GetBackgroundColor() );
+
+            VECTOR2I screen = gal->GetScreenPixelSize();
+            gal->ResizeScreen( width, height );
+            gal->ClearScreen();
+            gal->ResizeScreen( screen.x, screen.y );
+
+            {
+                KIGFX::GAL_DRAWING_CONTEXT ctx( gal.get() );
+                view->Redraw();
+            }
+
+            // A view of our own lets go of the board's items, which keep no trace of it
+            if( !frame() )
+                view->Clear();
+        }
+
+        // The picture is complete once its Cairo context goes
+        gal.reset();
+    }
+
+    response.set_width( image.GetWidth() );
+    response.set_height( image.GetHeight() );
+    PackBox2( *response.mutable_area(), area );
+
+    if( !req.path().empty() )
+    {
+        if( !image.SaveFile( wxString::FromUTF8( req.path() ), wxBITMAP_TYPE_PNG ) )
+            return badRequest( fmt::format( "could not write {}", req.path() ) );
+    }
+    else
+    {
+        response.set_png( encodePng( image ) );
     }
 
     return response;
