@@ -122,6 +122,14 @@ private:
 
     HANDLER_RESULT<NetColorsResponse> handleSetNetColors( const HANDLER_CONTEXT<SetNetColors>& aCtx );
 
+    HANDLER_RESULT<ClearancesResponse> handleGetClearances( const HANDLER_CONTEXT<GetClearances>& aCtx );
+
+    HANDLER_RESULT<EditorStateResponse> handleGetEditorState( const HANDLER_CONTEXT<GetEditorState>& aCtx );
+
+    HANDLER_RESULT<EditorStateResponse> handleTakeControl( const HANDLER_CONTEXT<TakeControl>& aCtx );
+
+    EditorStateResponse editorState() const;
+
     /// Each net's own color: the editor's while it is open, else the project's
     std::map<wxString, KIGFX::COLOR4D> netColors() const;
 

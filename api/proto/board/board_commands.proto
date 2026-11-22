@@ -275,6 +275,112 @@ message SetNetColors
   repeated NetColor colors = 3;
 }
 
+/*
+ * Who has the editor
+ */
+
+// What the board editor is doing.  Answers while a tool is active, as do the commands that only
+// read the board (GetItems, GetItemsById, GetItemsByNet, GetItemsByNetClass, GetConnectedItems,
+// GetBoundingBox, GetBoardBoundingBox, HitTest, GetVariants): what they return then may be in the
+// middle of an edit (a part being dragged reads where it is now).
+// Returns EditorStateResponse
+message GetEditorState
+{
+}
+
+message EditorStateResponse
+{
+  // The active tool, as "pcbnew.InteractiveRouter"; "pcbnew.InteractiveSelection" when none is
+  string tool = 1;
+
+  // A tool is in the middle of an edit, or a dialog is open: commands that change the board are
+  // refused with AS_BUSY until it is done
+  bool busy = 2;
+
+  // A modal dialog is open; only the person at the editor can close it
+  bool dialog_open = 3;
+}
+
+// Cancels the active tool as pressing Escape until the editor is back to selecting, so commands
+// that change the board are accepted.  What that tool had not finished is lost, as with Escape.
+// The editor shows for a few seconds that a client took over, with the reason given.
+// Refused (AS_BUSY) while a modal dialog is open.
+// Returns EditorStateResponse with the state after
+message TakeControl
+{
+  string reason = 1;
+}
+
+/*
+ * Clearances
+ */
+
+enum ClearanceKind
+{
+  CK_UNKNOWN = 0;
+  // Copper to copper on one layer
+  CK_COPPER = 1;
+  // Copper to a drilled hole
+  CK_HOLE = 2;
+  // Copper to the board's edge (Edge.Cuts) or a cutout
+  CK_EDGE = 3;
+  // Any two items, whatever their nets (physical_clearance rules)
+  CK_PHYSICAL = 4;
+}
+
+// An item a clearance is asked for: one on the board, or a Track, Arc or Via not yet laid, given
+// whole with its net (which must be on the board) and layer, so rules that look at its net, class,
+// width or layer apply to it as they would once it is laid
+message ClearanceItem
+{
+  oneof item
+  {
+    kiapi.common.types.KIID id = 1;
+    google.protobuf.Any proposed = 2;
+  }
+}
+
+message ClearanceQuery
+{
+  ClearanceItem a = 1;
+
+  // Absent: the clearance a keeps from anything
+  ClearanceItem b = 2;
+
+  kiapi.board.types.BoardLayer layer = 3;
+
+  ClearanceKind kind = 4;
+
+  // Also return KiCad's account of which rules it weighed (Inspect, Clearance Resolution)
+  bool explain = 5;
+}
+
+// The clearance KiCad's rules give two items on a layer, from the board's design rules, net
+// classes and custom rules as saved, the same way the design rules checker resolves them.
+// Returns ClearancesResponse, one result for each query in order.
+message GetClearances
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  repeated ClearanceQuery queries = 2;
+}
+
+message ClearanceResult
+{
+  // Absent when no rule gives one
+  kiapi.common.types.Distance clearance = 1;
+
+  // The rule it came from ("netclass 'Default'", a custom rule's name)
+  string rule = 2;
+
+  string explanation = 3;
+}
+
+message ClearancesResponse
+{
+  repeated ClearanceResult results = 1;
+}
+
 // Retrieve all the copper items belonging to a certain net or set of nets
 // returns kiapi.common.commands.GetItemsResponse
 message GetItemsByNet

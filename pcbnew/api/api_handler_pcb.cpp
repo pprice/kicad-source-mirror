@@ -59,6 +59,7 @@
 #include <pcb_3d_body.h>
 #include <pcb_point.h>
 #include <kiway.h>
+#include <drc/drc_engine.h>
 #include <drc/drc_item.h>
 #include <jobs/job_export_pcb_3d.h>
 #include <jobs/job_export_pcb_dxf.h>
@@ -107,6 +108,7 @@
 #include <drc/drc_rule_condition.h>
 #include <drc/drc_rule_parser.h>
 #include <widgets/appearance_controls.h>
+#include <widgets/wx_infobar.h>
 #include <widgets/report_severity.h>
 #include <drc/rule_editor/drc_re_rule_loader.h>
 #include <trace_helpers.h>
@@ -155,6 +157,9 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<GetNets, NetsResponse>( &API_HANDLER_PCB::handleGetNets );
     registerHandler<GetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleGetNetColors );
     registerHandler<SetNetColors, NetColorsResponse>( &API_HANDLER_PCB::handleSetNetColors );
+    registerHandler<GetClearances, ClearancesResponse>( &API_HANDLER_PCB::handleGetClearances );
+    registerHandler<GetEditorState, EditorStateResponse>( &API_HANDLER_PCB::handleGetEditorState );
+    registerHandler<TakeControl, EditorStateResponse>( &API_HANDLER_PCB::handleTakeControl );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
     registerHandler<GetItemsByNet, GetItemsResponse>( &API_HANDLER_PCB::handleGetItemsByNet );
     registerHandler<GetItemsByNetClass, GetItemsResponse>( &API_HANDLER_PCB::handleGetItemsByNetClass );
@@ -513,8 +518,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     GetItemsResponse response;
 
@@ -1794,6 +1798,231 @@ HANDLER_RESULT<NetColorsResponse> API_HANDLER_PCB::handleSetNetColors(
 }
 
 
+EditorStateResponse API_HANDLER_PCB::editorState() const
+{
+    EditorStateResponse state;
+
+    if( TOOL_BASE* tool = frame()->GetToolManager()->GetCurrentTool() )
+        state.set_tool( tool->GetName() );
+
+    state.set_busy( !frame()->CanAcceptApiCommands() );
+    state.set_dialog_open( !frame()->IsEnabled() );
+    return state;
+}
+
+
+HANDLER_RESULT<EditorStateResponse> API_HANDLER_PCB::handleGetEditorState(
+        const HANDLER_CONTEXT<GetEditorState>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> headless = checkForHeadless( "GetEditorState" ) )
+        return tl::unexpected( *headless );
+
+    return editorState();
+}
+
+
+HANDLER_RESULT<EditorStateResponse> API_HANDLER_PCB::handleTakeControl(
+        const HANDLER_CONTEXT<TakeControl>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> headless = checkForHeadless( "TakeControl" ) )
+        return tl::unexpected( *headless );
+
+    if( !frame()->IsEnabled() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BUSY );
+        e.set_error_message( "a dialog is open in the editor; only the person at it can close it" );
+        return tl::unexpected( e );
+    }
+
+    TOOL_MANAGER* mgr = frame()->GetToolManager();
+    bool          tookOver = false;
+
+    // Escape steps out one level at a time: the router drops the track it is laying, then leaves
+    for( int i = 0; i < 5 && !frame()->CanAcceptApiCommands(); ++i )
+    {
+        mgr->CancelTool();
+        tookOver = true;
+    }
+
+    if( !frame()->CanAcceptApiCommands() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BUSY );
+        e.set_error_message( fmt::format( "the editor is still busy in {} after cancelling it",
+                                          mgr->GetCurrentTool() ? mgr->GetCurrentTool()->GetName()
+                                                                : std::string( "no tool" ) ) );
+        return tl::unexpected( e );
+    }
+
+    if( tookOver && frame()->GetInfoBar() )
+    {
+        wxString who = wxString::FromUTF8( aCtx.ClientName );
+        wxString why = wxString::FromUTF8( aCtx.Request.reason() );
+        wxString msg = why.IsEmpty() ? wxString::Format( _( "%s took over the editor." ), who )
+                                     : wxString::Format( _( "%s took over the editor: %s" ), who, why );
+
+        frame()->GetInfoBar()->ShowMessageFor( msg, 5000 );
+    }
+
+    return editorState();
+}
+
+
+HANDLER_RESULT<ClearancesResponse> API_HANDLER_PCB::handleGetClearances(
+        const HANDLER_CONTEXT<GetClearances>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    auto badRequest =
+            []( const std::string& aMessage ) -> tl::unexpected<ApiResponseStatus>
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( aMessage );
+                return tl::unexpected( e );
+            };
+
+    BOARD* board = this->board();
+
+    // A fresh engine, as Inspect > Clearance Resolution makes, so custom rules are read as saved
+    auto engine = std::make_unique<DRC_ENGINE>( board, &board->GetDesignSettings() );
+
+    try
+    {
+        engine->InitEngine( board->GetDesignRulesPath() );
+    }
+    catch( PARSE_ERROR& e )
+    {
+        return badRequest( fmt::format( "the custom rules do not compile: {}", e.What().ToStdString() ) );
+    }
+
+    for( ZONE* zone : board->Zones() )
+        zone->CacheBoundingBox();
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+    {
+        for( ZONE* zone : footprint->Zones() )
+            zone->CacheBoundingBox();
+
+        footprint->BuildCourtyardCaches();
+    }
+
+    std::vector<std::unique_ptr<BOARD_ITEM>> proposed;
+
+    auto resolve =
+            [&]( const ClearanceItem& aItem, int aQuery ) -> HANDLER_RESULT<BOARD_ITEM*>
+            {
+                if( aItem.has_id() )
+                {
+                    std::optional<BOARD_ITEM*> item = getItemById( KIID( aItem.id().value() ) );
+
+                    if( !item )
+                        return badRequest( fmt::format( "query {}: no item {} on the board", aQuery,
+                                                        aItem.id().value() ) );
+
+                    return *item;
+                }
+
+                if( !aItem.has_proposed() )
+                    return nullptr;
+
+                const google::protobuf::Any& any = aItem.proposed();
+                KICAD_T                      type;
+                std::string                  net;
+
+                if( kiapi::board::types::Track track; any.UnpackTo( &track ) )
+                {
+                    type = PCB_TRACE_T;
+                    net = track.net().name();
+                }
+                else if( kiapi::board::types::Arc arc; any.UnpackTo( &arc ) )
+                {
+                    type = PCB_ARC_T;
+                    net = arc.net().name();
+                }
+                else if( kiapi::board::types::Via via; any.UnpackTo( &via ) )
+                {
+                    type = PCB_VIA_T;
+                    net = via.net().name();
+                }
+                else
+                {
+                    return badRequest( fmt::format( "query {}: a proposed item must be a Track, Arc or Via",
+                                                    aQuery ) );
+                }
+
+                // Unpacking a net the board lacks would add it to the board
+                if( !net.empty() && !board->FindNet( wxString::FromUTF8( net ) ) )
+                    return badRequest( fmt::format( "query {}: there is no net '{}' on the board", aQuery, net ) );
+
+                HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>> created = createItemForType( type, board );
+
+                if( !created )
+                    return tl::unexpected( created.error() );
+
+                if( !( *created )->Deserialize( any ) )
+                    return badRequest( fmt::format( "query {}: could not unpack the proposed item", aQuery ) );
+
+                proposed.push_back( std::move( *created ) );
+                return proposed.back().get();
+            };
+
+    ClearancesResponse response;
+    int                index = 0;
+
+    for( const ClearanceQuery& query : aCtx.Request.queries() )
+    {
+        HANDLER_RESULT<BOARD_ITEM*> a = resolve( query.a(), index );
+
+        if( !a )
+            return tl::unexpected( a.error() );
+
+        if( !*a )
+            return badRequest( fmt::format( "query {}: a is required", index ) );
+
+        HANDLER_RESULT<BOARD_ITEM*> b = resolve( query.b(), index );
+
+        if( !b )
+            return tl::unexpected( b.error() );
+
+        DRC_CONSTRAINT_T constraintType = CLEARANCE_CONSTRAINT;
+
+        switch( query.kind() )
+        {
+        case ClearanceKind::CK_HOLE:     constraintType = HOLE_CLEARANCE_CONSTRAINT;     break;
+        case ClearanceKind::CK_EDGE:     constraintType = EDGE_CLEARANCE_CONSTRAINT;     break;
+        case ClearanceKind::CK_PHYSICAL: constraintType = PHYSICAL_CLEARANCE_CONSTRAINT; break;
+        default:                         break;
+        }
+
+        PCB_LAYER_ID layer = FromProtoEnum<PCB_LAYER_ID>( query.layer() );
+
+        if( layer == UNDEFINED_LAYER )
+            layer = ( *a )->GetLayer();
+
+        WX_STRING_REPORTER reporter;
+        DRC_CONSTRAINT     constraint = engine->EvalRules( constraintType, *a, *b, layer,
+                                                           query.explain() ? &reporter : nullptr );
+
+        ClearanceResult* result = response.add_results();
+
+        if( !constraint.IsNull() && constraint.GetValue().HasMin() )
+            result->mutable_clearance()->set_value_nm( constraint.GetValue().Min() );
+
+        result->set_rule( constraint.GetName().ToUTF8() );
+
+        if( query.explain() )
+            result->set_explanation( UnescapeHTML( RemoveHTMLTags( reporter.GetMessages() ) ).ToUTF8() );
+
+        index++;
+    }
+
+    return response;
+}
+
+
 HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetConnectedItems(
         const HANDLER_CONTEXT<GetConnectedItems>& aCtx )
 {
@@ -1804,8 +2033,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetConnectedItems(
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     std::vector<KICAD_T> types = parseRequestedItemTypes( aCtx.Request.types() );
     const bool filterByType = aCtx.Request.types_size() > 0;
@@ -1871,8 +2099,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItemsByNet(
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     std::vector<KICAD_T> types = parseRequestedItemTypes( aCtx.Request.types() );
     const bool filterByType = aCtx.Request.types_size() > 0;
@@ -1926,8 +2153,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItemsByNetClass(
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     std::vector<KICAD_T> types = parseRequestedItemTypes( aCtx.Request.types() );
     const bool filterByType = aCtx.Request.types_size() > 0;
@@ -3355,8 +3581,7 @@ HANDLER_RESULT<VariantsResponse> API_HANDLER_PCB::handleGetVariants( const HANDL
     if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     BOARD* board = pcbContext()->GetBoard();
     VariantsResponse response;

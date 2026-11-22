@@ -353,8 +353,7 @@ HANDLER_RESULT<HitTestResponse> API_HANDLER_EDITOR::handleHitTest(
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     HitTestResponse response;
 

@@ -789,8 +789,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_BOARD::handleGetItemsById(
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     GetItemsResponse response;
 
@@ -1117,8 +1116,7 @@ HANDLER_RESULT<GetBoundingBoxResponse> API_HANDLER_BOARD::handleGetBoundingBox(
         return tl::unexpected( e );
     }
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     GetBoundingBoxResponse response;
     bool includeText = aCtx.Request.mode() == BoundingBoxMode::BBM_ITEM_AND_CHILD_TEXT;
@@ -1153,8 +1151,7 @@ API_HANDLER_BOARD::handleGetBoardBoundingBox( const HANDLER_CONTEXT<GetBoardBoun
     if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
+    // A read: it answers while a tool is active, so a client can watch an edit in progress
 
     BoardBoundingBoxResponse response;
     BOX2I                    bbox;
