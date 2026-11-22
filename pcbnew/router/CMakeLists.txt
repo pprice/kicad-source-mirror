@@ -28,6 +28,7 @@ set( PCBNEW_PNS_SRCS
     pns_component_dragger.cpp
     pns_diff_pair.cpp
     pns_diff_pair_placer.cpp
+    pns_diff_pair_symmetry.cpp
     pns_dp_meander_placer.cpp
     pns_dragger.cpp
     pns_helpers.cpp
@@ -72,6 +73,7 @@ set( PCBNEW_PNS_QA_SRCS
     pns_component_dragger.cpp
     pns_diff_pair.cpp
     pns_diff_pair_placer.cpp
+    pns_diff_pair_symmetry.cpp
     pns_dp_meander_placer.cpp
     pns_dragger.cpp
     pns_hole.cpp

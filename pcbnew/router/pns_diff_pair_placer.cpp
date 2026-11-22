@@ -30,6 +30,10 @@
 #include "pns_debug_decorator.h"
 #include "pns_arc.h"
 #include "pns_utils.h"
+#include "pns_diff_pair_symmetry.h"
+
+#include <base_units.h>
+#include <geometry/shape_circle.h>
 
 namespace PNS {
 
@@ -65,6 +69,7 @@ DIFF_PAIR_PLACER::DIFF_PAIR_PLACER( ROUTER* aRouter ) :
     m_currentTraceOk = false;
     m_idle = true;
     m_hasFixedAnything = false;
+    m_skewSoFar = 0.0;
 }
 
 DIFF_PAIR_PLACER::~DIFF_PAIR_PLACER()
@@ -383,19 +388,191 @@ bool DIFF_PAIR_PLACER::rhWalkOnly( const VECTOR2I& aP )
 
 bool DIFF_PAIR_PLACER::route( const VECTOR2I& aP )
 {
+    bool ok = false;
+
     switch( Settings().Mode() )
     {
     case RM_MarkObstacles:
-        return rhMarkObstacles( aP );
+        ok = rhMarkObstacles( aP );
+        break;
     case RM_Walkaround:
-        return rhWalkOnly( aP );
+        ok = rhWalkOnly( aP );
+        break;
     case RM_Shove:
-        return rhShoveOnly( aP );
+        ok = rhShoveOnly( aP );
+        break;
     default:
         break;
     }
 
-    return false;
+    if( ok )
+        makeSymmetric();
+
+    return ok;
+}
+
+
+void DIFF_PAIR_PLACER::makeSymmetric()
+{
+    const SHAPE_LINE_CHAIN& p = m_currentTrace.CP();
+    const SHAPE_LINE_CHAIN& n = m_currentTrace.CN();
+
+    if( !m_prevPair || p.PointCount() < 2 || n.PointCount() < 2 || p.ArcCount() || n.ArcCount() )
+        return;
+
+    // A trace whose last segment is held back for the next click would lose its symmetry there
+    if( !m_snapOnTarget && !m_currentTrace.EndsWithVias() && !Settings().GetFixAllSegments() )
+        return;
+
+    const int pvMask = ITEM::SOLID_T | ITEM::VIA_T;
+
+    // A free end of tracks: the way the pair runs from it into the stretch, along the track there
+    auto alongTrack =
+            []( const ITEM* aItem, const VECTOR2I& aAnchor ) -> std::optional<VECTOR2D>
+            {
+                if( !aItem->OfKind( ITEM::SEGMENT_T ) )
+                    return std::nullopt;
+
+                const VECTOR2I other = aItem->Anchor( 0 ) == aAnchor ? aItem->Anchor( 1 ) : aItem->Anchor( 0 );
+
+                if( other == aAnchor )
+                    return std::nullopt;
+
+                return VECTOR2D( aAnchor - other );
+            };
+
+    DP_SYMMETRY_END start;
+    start.anchor[0] = m_prevPair->AnchorP();
+    start.anchor[1] = m_prevPair->AnchorN();
+
+    const ITEM* startP = m_prevPair->PrimP();
+    const ITEM* startN = m_prevPair->PrimN();
+
+    if( !startP || !startN || p.CPoint( 0 ) != start.anchor[0] || n.CPoint( 0 ) != start.anchor[1] )
+        return;
+
+    if( startP->OfKind( pvMask ) && startN->OfKind( pvMask ) )
+    {
+        start.copper[0] = startP->Shape( m_currentLayer );
+        start.copper[1] = startN->Shape( m_currentLayer );
+
+        if( !start.copper[0] || !start.copper[1] )
+            return;
+    }
+    else if( std::optional<VECTOR2D> out = alongTrack( startP, start.anchor[0] ) )
+    {
+        start.out = *out;
+    }
+    else
+    {
+        return;
+    }
+
+    DP_SYMMETRY_END end;
+    end.anchor[0] = p.CLastPoint();
+    end.anchor[1] = n.CLastPoint();
+
+    SHAPE_CIRCLE viaCopper[2];
+
+    if( m_currentTrace.EndsWithVias() )
+    {
+        for( int i = 0; i < 2; i++ )
+        {
+            viaCopper[i] = SHAPE_CIRCLE( end.anchor[i], m_sizes.ViaDiameter() / 2 );
+            end.copper[i] = &viaCopper[i];
+        }
+    }
+    else if( m_snapOnTarget && m_target && m_target->PrimP() && m_target->PrimN() )
+    {
+        if( m_target->AnchorP() != end.anchor[0] || m_target->AnchorN() != end.anchor[1] )
+            return;
+
+        const ITEM* endP = m_target->PrimP();
+        const ITEM* endN = m_target->PrimN();
+
+        if( endP->OfKind( pvMask ) && endN->OfKind( pvMask ) )
+        {
+            end.copper[0] = endP->Shape( m_currentLayer );
+            end.copper[1] = endN->Shape( m_currentLayer );
+
+            if( !end.copper[0] || !end.copper[1] )
+                return;
+        }
+        else if( std::optional<VECTOR2D> out = alongTrack( endP, end.anchor[0] ) )
+        {
+            // Joining tracks already there: the pair comes in the way they go on
+            end.out = -*out;
+        }
+        else
+        {
+            return;
+        }
+    }
+    else
+    {
+        end.out = VECTOR2D( p.CPoint( -2 ) - p.CLastPoint() );
+    }
+
+    DP_SYMMETRY_PARAMS params;
+    params.width = m_sizes.DiffPairWidth();
+    params.gap = m_sizes.DiffPairGap();
+    params.skew = m_skewSoFar;
+
+    DIRECTION_45::CORNER_MODE corners = Settings().GetCornerMode();
+
+    if( corners == DIRECTION_45::ROUNDED_45 || corners == DIRECTION_45::ROUNDED_90 )
+    {
+        // 0.7 mm on the centre line, the inner line's arc a track's width at least
+        params.radius = std::max( pcbIUScale.mmToIU( 0.7 ),
+                                  ( params.width + params.gap ) / 2 + params.width );
+    }
+
+    // Clear of everything but the pair's own tracks and vias, which the router passes over as it
+    // lays a pair again; the other line's pads count
+    COLLISION_SEARCH_OPTIONS opts;
+    opts.m_useClearanceEpsilon = false;
+    opts.m_filter =
+            [this]( const ITEM* aTestItem, const ITEM* aRefItem ) -> bool
+            {
+                if( aTestItem->Net() == m_netP || aTestItem->Net() == m_netN )
+                    return aTestItem->OfKind( ITEM::SOLID_T );
+
+                return true;
+            };
+
+    auto clear =
+            [&]( LINE& aLine ) -> bool
+            {
+                return !m_currentNode->CheckColliding( &aLine, opts ).has_value();
+            };
+
+    params.bumpClear =
+            [&]( int aLine, const SHAPE_LINE_CHAIN& aChain ) -> bool
+            {
+                LINE line;
+                line.SetShape( aChain );
+                line.SetWidth( params.width );
+                line.SetNet( aLine == 0 ? m_netP : m_netN );
+                line.SetLayer( m_currentLayer );
+                return clear( line );
+            };
+
+    params.linesClear =
+            [&]( const SHAPE_LINE_CHAIN& aP, const SHAPE_LINE_CHAIN& aN ) -> bool
+            {
+                LINE lineP( m_currentTrace.PLine(), aP );
+                LINE lineN( m_currentTrace.NLine(), aN );
+                return clear( lineP ) && clear( lineN );
+            };
+
+    std::optional<DP_SYMMETRY_RESULT> symmetric = SymmetricPair( p, n, start, end, params );
+
+    if( !symmetric )
+        return;
+
+    PNS_DBG( Dbg(), Message, wxString::Format( "symmetric pair: %d bumps", symmetric->bumps ) );
+
+    m_currentTrace.SetShape( symmetric->p, symmetric->n );
 }
 
 
@@ -771,6 +948,7 @@ bool DIFF_PAIR_PLACER::Start( const VECTOR2I& aP, ITEM* aStartItem )
     m_placingVia = false;
     m_chainedPlacement = false;
     m_hasFixedAnything = false;
+    m_skewSoFar = 0.0;
     m_currentTraceOk = false;
     m_currentTrace = DIFF_PAIR();
     m_currentTrace.SetNets( m_netP, m_netN );
@@ -1286,6 +1464,9 @@ bool DIFF_PAIR_PLACER::FixRoute( const VECTOR2I& aP, ITEM* aEndItem, bool aForce
     {
         m_chainedPlacement = !m_snapOnTarget && !aForceFinish;
     }
+
+    // What the next stretch has to put back
+    m_skewSoFar += (double) m_currentTrace.CP().Length() - (double) m_currentTrace.CN().Length();
 
     LINE &lineP = m_currentTrace.PLine();
     LINE &lineN = m_currentTrace.NLine();

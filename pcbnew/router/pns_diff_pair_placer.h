@@ -205,6 +205,13 @@ private:
     bool routeHead( const VECTOR2I& aP );
     bool tryWalkDp( NODE* aNode, DIFF_PAIR& aPair, bool aSolidsOnly );
 
+    /**
+     * Redraw the current trace as two lines either side of one centre line, opened evenly at its
+     * pads, its arcs about one centre and its bends' skew put back in bumps (SymmetricPair).
+     * Left as the router laid it where no such pair keeps clear.
+     */
+    void makeSymmetric();
+
     /// route step, walk around mode
     bool rhWalkOnly( const VECTOR2I& aP );
 
@@ -292,6 +299,9 @@ private:
 
     bool m_idle;
     bool m_hasFixedAnything;
+
+    /// How much longer the P line is than the N line over what this placement has fixed so far
+    double m_skewSoFar;
 };
 
 }
