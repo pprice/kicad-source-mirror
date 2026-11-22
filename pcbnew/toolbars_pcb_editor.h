@@ -30,6 +30,7 @@ public:
     static ACTION_TOOLBAR_CONTROL viaDiameter;
     static ACTION_TOOLBAR_CONTROL viaStack;
     static ACTION_TOOLBAR_CONTROL currentVariant;
+    static ACTION_TOOLBAR_CONTROL problems;
 };
 
 /**

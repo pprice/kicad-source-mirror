@@ -64,6 +64,11 @@
 #include <widgets/wx_aui_utils.h>
 #include <wx/wupdlock.h>
 #include <wx/combobox.h>
+#include <wx/dcbuffer.h>
+#include <wx/graphics.h>
+#include <wx/timer.h>
+#include <connectivity/connectivity_data.h>
+#include <pcb_marker.h>
 #include <toolbars_pcb_editor.h>
 #include <settings/settings_manager.h>
 #include <eda_text.h>
@@ -73,6 +78,128 @@
 
 /* Data to build the layer pair indicator button */
 static wxBitmapBundle LayerPairBitmap;
+
+
+/**
+ * Continuity's problem chips (docs/kicad-look.md, "Important first"): how many connections are
+ * still to route and how many markers the last check left, each a pill in the problem colour,
+ * and nothing at all at zero. A click opens the check.
+ */
+class PROBLEM_CHIPS : public wxControl
+{
+public:
+    PROBLEM_CHIPS( wxWindow* aParent, PCB_EDIT_FRAME* aFrame ) :
+            wxControl( aParent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE ),
+            m_frame( aFrame ),
+            m_timer( this )
+    {
+        SetBackgroundStyle( wxBG_STYLE_PAINT );
+        SetCursor( wxCursor( wxCURSOR_HAND ) );
+        SetToolTip( _( "Open the design rules check" ) );
+
+        wxFont font = GetFont();
+        font.SetWeight( wxFONTWEIGHT_BOLD );
+        SetFont( font );
+
+        // Room for both chips at three digits, so the toolbar never has to lay itself out again.
+        wxClientDC dc( this );
+        dc.SetFont( GetFont() );
+        wxSize text = dc.GetTextExtent( chipText( 999, _( "unrouted" ) ) + chipText( 999, _( "from the check" ) ) );
+        SetMinSize( wxSize( text.x + FromDIP( 40 ), text.y + FromDIP( 12 ) ) );
+        SetSize( GetMinSize() );
+
+        Bind( wxEVT_PAINT, &PROBLEM_CHIPS::onPaint, this );
+        Bind( wxEVT_LEFT_UP, &PROBLEM_CHIPS::onClick, this );
+        Bind( wxEVT_TIMER, [this]( wxTimerEvent& ) { recount(); } );
+        m_timer.Start( 1000 );
+    }
+
+    ~PROBLEM_CHIPS() override { m_timer.Stop(); }
+
+private:
+    static wxString chipText( unsigned aCount, const wxString& aWhat )
+    {
+        return wxString::Format( wxS( "%u %s" ), aCount, aWhat );
+    }
+
+    void recount()
+    {
+        BOARD* board = m_frame ? m_frame->GetBoard() : nullptr;
+
+        if( !board || !IsShownOnScreen() )
+            return;
+
+        unsigned unrouted = board->GetConnectivity() ? board->GetConnectivity()->GetUnconnectedCount( true ) : 0;
+        unsigned markers = 0;
+
+        for( PCB_MARKER* marker : board->Markers() )
+        {
+            if( !marker->IsExcluded() && marker->GetSeverity() != RPT_SEVERITY_EXCLUSION )
+                ++markers;
+        }
+
+        if( unrouted != m_unrouted || markers != m_markers )
+        {
+            m_unrouted = unrouted;
+            m_markers = markers;
+            Refresh();
+        }
+    }
+
+    void onClick( wxMouseEvent& aEvent )
+    {
+        if( ( m_unrouted || m_markers ) && m_frame )
+            m_frame->GetToolManager()->RunAction( PCB_ACTIONS::runDRC );
+    }
+
+    void onPaint( wxPaintEvent& )
+    {
+        wxAutoBufferedPaintDC dc( this );
+        dc.SetBackground( wxBrush( wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE ) ) );
+        dc.Clear();
+
+        std::unique_ptr<wxGraphicsContext> gc( wxGraphicsContext::Create( dc ) );
+
+        if( !gc )
+            return;
+
+        const wxColour problem( 255, 92, 191 );   // Continuity's --c-problem
+        const wxColour face = wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE );
+        const wxColour ground( ( face.Red() * 4 + problem.Red() ) / 5, ( face.Green() * 4 + problem.Green() ) / 5,
+                               ( face.Blue() * 4 + problem.Blue() ) / 5 );
+
+        gc->SetFont( GetFont(), problem );
+
+        const wxSize size = GetClientSize();
+        const double padX = FromDIP( 10 ), gap = FromDIP( 6 ), height = size.y - FromDIP( 6 );
+        double       x = 0;
+
+        for( const auto& [count, what] : { std::make_pair( m_unrouted, _( "unrouted" ) ),
+                                           std::make_pair( m_markers, _( "from the check" ) ) } )
+        {
+            if( !count )
+                continue;
+
+            wxString text = chipText( count, what );
+            double   tw, th;
+            gc->GetTextExtent( text, &tw, &th );
+
+            const double w = tw + 2 * padX;
+            const double y = ( size.y - height ) / 2;
+
+            gc->SetPen( *wxTRANSPARENT_PEN );
+            gc->SetBrush( wxBrush( ground ) );
+            gc->DrawRoundedRectangle( x, y, w, height, height / 2 );
+            gc->DrawText( text, x + padX, y + ( height - th ) / 2 );
+            x += w + gap;
+        }
+    }
+
+    PCB_EDIT_FRAME* m_frame;
+    wxTimer         m_timer;
+    unsigned        m_unrouted = 0;
+    unsigned        m_markers = 0;
+};
 
 
 void PCB_EDIT_FRAME::PrepareLayerIndicator( bool aForceRebuild )
@@ -132,6 +259,11 @@ ACTION_TOOLBAR_CONTROL PCB_ACTION_TOOLBAR_CONTROLS::currentVariant( "control.PCB
                                                                     _( "Current variant" ),
                                                                     _( "Control to select the current variant" ),
                                                                     { FRAME_PCB_EDITOR } );
+ACTION_TOOLBAR_CONTROL PCB_ACTION_TOOLBAR_CONTROLS::problems( "control.PCBProblems",
+                                                              _( "Problems" ),
+                                                              _( "Connections still to route and markers the "
+                                                                 "last check left" ),
+                                                              { FRAME_PCB_EDITOR } );
 
 
 std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarConfig( TOOLBAR_LOC aToolbar )
@@ -391,6 +523,9 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         config.AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::currentVariant );
         config.AppendControl( ACTION_TOOLBAR_CONTROLS::ipcScripting );
 
+        config.AppendSeparator();
+        config.AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::problems );
+
         break;
 
     case TOOLBAR_LOC::TOP_AUX:
@@ -521,6 +656,14 @@ void PCB_EDIT_FRAME::configureToolbars()
             };
 
     RegisterCustomToolbarControlFactory( ACTION_TOOLBAR_CONTROLS::ipcScripting, pluginControlFactory );
+
+    auto problemChipsFactory =
+            [this]( ACTION_TOOLBAR* aToolbar )
+            {
+                aToolbar->Add( new PROBLEM_CHIPS( aToolbar, this ) );
+            };
+
+    RegisterCustomToolbarControlFactory( PCB_ACTION_TOOLBAR_CONTROLS::problems, problemChipsFactory );
 }
 
 
