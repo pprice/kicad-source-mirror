@@ -40,12 +40,12 @@ using namespace KIGFX;
 
 const BOX2I ROUTER_STATUS_VIEW_ITEM::ViewBBox() const
 {
-    BOX2I tmp;
+    // We can't tell the text's extents without a view to know the scale, so the box is generous:
+    // a metre each way of the cursor. The readout is an item of the view's own index now, not
+    // of the preview group, and the maximum box is no place in an index.
+    const int reach = 1000000000;
 
-    // this is an edit-time artefact; no reason to try and be smart with the bounding box
-    // (besides, we can't tell the text extents without a view to know what the scale is)
-    tmp.SetMaximum();
-    return tmp;
+    return BOX2I( m_pos - VECTOR2I( reach, reach ), VECTOR2I( 2 * reach, 2 * reach ) );
 }
 
 std::vector<int> ROUTER_STATUS_VIEW_ITEM::ViewGetLayers() const
@@ -121,11 +121,13 @@ void ROUTER_STATUS_VIEW_ITEM::ViewDraw( int aLayer, KIGFX::VIEW* aView ) const
     KIFONT::FONT*             regular = readoutFont( false );
     KIFONT::FONT*             bold = readoutFont( true );
 
-    // Everything in units of the constant glyph height, so the box keeps its size on screen.
-    const double   u = dims.GlyphSize.y;
-    const VECTOR2I titleSize = KiROUND( VECTOR2D( dims.GlyphSize ) * 1.05 );
-    const VECTOR2I rowSize = KiROUND( VECTOR2D( dims.GlyphSize ) * 0.9 );
-    const VECTOR2I hintSize = KiROUND( VECTOR2D( dims.GlyphSize ) * 0.8 );
+    // Everything in units of the constant glyph height, so the box keeps its size on screen; a
+    // third larger than KiCad's own cursor text, which is small to read beside a track.
+    const VECTOR2D glyph = VECTOR2D( dims.GlyphSize ) * 1.35;
+    const double   u = glyph.y;
+    const VECTOR2I titleSize = KiROUND( glyph * 1.05 );
+    const VECTOR2I rowSize = KiROUND( glyph * 0.9 );
+    const VECTOR2I hintSize = KiROUND( glyph * 0.8 );
     const double   pad = u * 0.75;
     const double   titleLine = u * 1.55;
     const double   rowLine = u * 1.35;

@@ -622,17 +622,20 @@ private:
 
 ROUTER_TOOL::~ROUTER_TOOL()
 {
+    // A readout is taken off as each route ends (performRouting). One left here would be in a
+    // view that may already be gone with its frame, so it is not touched.
 }
 
 
 void ROUTER_TOOL::showPairStatus()
 {
-    view()->ClearPreview();
-
     PNS::PLACEMENT_ALGO* algo = m_router->Placer();
 
     if( !algo || !m_router->RoutingInProgress() )
+    {
+        showReadout( nullptr );
         return;
+    }
 
     // Continuity's readout at the cursor (docs/kicad-look.md, "Important first"): what is being
     // laid, how wide, on which layer, and how long this leg is; for a pair, both nets, the gap
@@ -640,6 +643,16 @@ void ROUTER_TOOL::showPairStatus()
     ROUTER_STATUS_VIEW_ITEM* readout = new ROUTER_STATUS_VIEW_ITEM();
     auto*                    pairPlacer = dynamic_cast<PNS::DIFF_PAIR_PLACER*>( algo );
     const PNS::SIZES_SETTINGS& sizes = m_router->Sizes();
+
+    // Read at a glance: millimetres to two places ("0.30 mm"), not the panels' four
+    auto readoutLength =
+            [&]( long long aValue ) -> wxString
+            {
+                if( frame()->GetUserUnits() == EDA_UNITS::MM )
+                    return wxString::Format( wxS( "%.2f mm" ), pcbIUScale.IUTomm( aValue ) );
+
+                return frame()->MessageTextFromValue( aValue );
+            };
 
     wxArrayString nets;
 
@@ -653,12 +666,12 @@ void ROUTER_TOOL::showPairStatus()
 
     if( pairPlacer )
     {
-        readout->AddRow( _( "Width" ), frame()->MessageTextFromValue( sizes.DiffPairWidth() ) );
-        readout->AddRow( _( "Gap" ), frame()->MessageTextFromValue( sizes.DiffPairGap() ) );
+        readout->AddRow( _( "Width" ), readoutLength( sizes.DiffPairWidth() ) );
+        readout->AddRow( _( "Gap" ), readoutLength( sizes.DiffPairGap() ) );
     }
     else
     {
-        readout->AddRow( _( "Width" ), frame()->MessageTextFromValue( sizes.TrackWidth() ) );
+        readout->AddRow( _( "Width" ), readoutLength( sizes.TrackWidth() ) );
     }
 
     readout->AddRow( _( "Layer" ),
@@ -676,18 +689,18 @@ void ROUTER_TOOL::showPairStatus()
     if( pairPlacer && lengths.size() == 2 )
     {
         long long skew = std::llabs( lengths[0] - lengths[1] );
-        readout->AddRow( _( "This leg" ), frame()->MessageTextFromValue( std::max( lengths[0], lengths[1] ) ) );
-        readout->AddRow( _( "Skew here" ), frame()->MessageTextFromValue( skew ) );
+        readout->AddRow( _( "This leg" ), readoutLength( std::max( lengths[0], lengths[1] ) ) );
+        readout->AddRow( _( "Skew here" ), readoutLength( skew ) );
     }
     else if( lengths.size() == 1 )
     {
-        readout->AddRow( _( "This leg" ), frame()->MessageTextFromValue( lengths[0] ) );
+        readout->AddRow( _( "This leg" ), readoutLength( lengths[0] ) );
     }
 
     if( !pairPlacer )
     {
         readout->SetPosition( frame()->GetToolManager()->GetMousePosition() );
-        view()->AddToPreview( readout );
+        showReadout( readout );
         return;
     }
 
@@ -734,7 +747,22 @@ void ROUTER_TOOL::showPairStatus()
         readout->SetHint( hint );
 
     readout->SetPosition( frame()->GetToolManager()->GetMousePosition() );
-    view()->AddToPreview( readout );
+    showReadout( readout );
+}
+
+
+void ROUTER_TOOL::showReadout( ROUTER_STATUS_VIEW_ITEM* aReadout )
+{
+    if( m_readout )
+    {
+        view()->Remove( m_readout );
+        delete m_readout;
+    }
+
+    m_readout = aReadout;
+
+    if( m_readout )
+        view()->Add( m_readout );
 }
 
 
@@ -2230,6 +2258,7 @@ void ROUTER_TOOL::performRouting( VECTOR2D aStartPosition )
         m_pairRestTimer->Stop();
 
     view()->ClearPreview();
+    showReadout( nullptr );
 
     m_router->CommitRouting();
     // Reset to normal for next route

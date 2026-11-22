@@ -28,6 +28,7 @@
 
 class PCB_SELECTION_TOOL;
 class PCB_VIA;
+class ROUTER_STATUS_VIEW_ITEM;
 class wxTimer;
 
 
@@ -150,6 +151,13 @@ private:
      */
     void showPairStatus();
 
+    /**
+     * Put a readout at the cursor in place of the last, or take it off with nullptr. It goes
+     * into the view as an item of its own, as the router's preview does: the view's preview
+     * group was never drawn while routing (2026-11-22).
+     */
+    void showReadout( ROUTER_STATUS_VIEW_ITEM* aReadout );
+
 private:
     std::shared_ptr<ACTION_MENU> m_diffPairMenu;
     std::shared_ptr<ACTION_MENU> m_trackViaMenu;
@@ -179,6 +187,9 @@ private:
 
     // Fires once the cursor rests, for a pair whose lines are still to be evened
     std::unique_ptr<wxTimer> m_pairRestTimer;
+
+    // The readout at the cursor, owned here while it is in the view
+    ROUTER_STATUS_VIEW_ITEM* m_readout = nullptr;
 };
 
 #endif
