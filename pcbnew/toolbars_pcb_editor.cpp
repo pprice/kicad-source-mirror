@@ -291,6 +291,8 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
     // pprice/continuity): what is used while placing and routing, one row along the top with the
     // track, via and layer choices in it. Everything else is in the menus, and Preferences,
     // Toolbars puts any of it back.
+    // The left one is KiCad's whole, as it was before the cut (Phil, 2026-11-22: "weve dropped
+    // too much from the left vertical toolbar, there is plenty of space").
     case TOOLBAR_LOC::LEFT:
         config.AppendAction( ACTIONS::toggleGrid )
               .WithContextMenu(
@@ -305,6 +307,8 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
 
                       return menu;
                   } )
+              .AppendAction( ACTIONS::toggleGridOverrides )
+              .AppendAction( PCB_ACTIONS::togglePolarCoords )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Units" ) )
                             .AddAction( ACTIONS::millimetersUnits )
                             .AddAction( ACTIONS::inchesUnits )
@@ -312,16 +316,45 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Crosshair modes" ) )
                             .AddAction( ACTIONS::cursorSmallCrosshairs )
                             .AddAction( ACTIONS::cursorFullCrosshairs )
-                            .AddAction( ACTIONS::cursor45Crosshairs ) )
-              .AppendAction( PCB_ACTIONS::showRatsnest )
-              .AppendAction( ACTIONS::highContrastMode );
+                            .AddAction( ACTIONS::cursor45Crosshairs ) );
 
         config.AppendSeparator()
-              .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Zone display" ) )
-                            .AddAction( PCB_ACTIONS::zoneDisplayFilled )
-                            .AddAction( PCB_ACTIONS::zoneDisplayOutline ) )
+            .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Line modes" ) )
+                        .AddAction( PCB_ACTIONS::lineModeFree )
+                        .AddAction( PCB_ACTIONS::lineMode90 )
+                        .AddAction( PCB_ACTIONS::lineMode45 ) )
+            .AppendAction( PCB_ACTIONS::toggleAutoConstraints );
+
+        config.AppendSeparator()
+              .AppendAction( PCB_ACTIONS::showRatsnest )
+              .AppendAction( PCB_ACTIONS::ratsnestLineMode );
+
+        config.AppendSeparator()
+              .AppendAction( ACTIONS::highContrastMode )
+              .AppendAction( PCB_ACTIONS::toggleNetHighlight );
+
+        config.AppendSeparator()
+              .AppendAction( PCB_ACTIONS::zoneDisplayFilled )
+              .AppendAction( PCB_ACTIONS::zoneDisplayOutline );
+
+        if( ADVANCED_CFG::GetCfg().m_ExtraZoneDisplayModes )
+        {
+            config.AppendAction( PCB_ACTIONS::zoneDisplayFractured );
+            config.AppendAction( PCB_ACTIONS::zoneDisplayTriangulated );
+        }
+
+        config.AppendSeparator()
               .AppendAction( PCB_ACTIONS::padDisplayMode )
+              .AppendAction( PCB_ACTIONS::viaDisplayMode )
               .AppendAction( PCB_ACTIONS::trackDisplayMode );
+
+        if( ADVANCED_CFG::GetCfg().m_DrawBoundingBoxes )
+            config.AppendAction( ACTIONS::toggleBoundingBoxes );
+
+        // Tools to show/hide toolbars:
+        config.AppendSeparator()
+              .AppendAction( PCB_ACTIONS::showLayersManager )
+              .AppendAction( ACTIONS::showProperties );
 
         break;
 

@@ -477,6 +477,36 @@ void paintFlatDropDown( HWND aHwnd, HDC aHdc, wxWindow* aCtrl )
 }
 
 
+/**
+ * An owner-drawn combo box (wxBitmapComboBox: KiCad's layer box) has the field height wx
+ * measures for its items, the larger of its bitmap's height plus 2 and its font's, where a plain
+ * one gets Windows' own height for its font: 2 px less at 125% (Phil, 2026-11-22: "the layer
+ * drop in toolbar is 1px smaller than the track/via size"). Asks a plain one with the same font
+ * for its height and gives the owner-drawn one at least that.
+ */
+void matchPlainFieldHeight( HWND aHwnd )
+{
+    if( !( ::GetWindowLongW( aHwnd, GWL_STYLE ) & ( CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE ) ) )
+        return;
+
+    HWND plain = ::CreateWindowExW( 0, L"COMBOBOX", L"", WS_CHILD | CBS_DROPDOWNLIST, 0, 0, 100, 100,
+                                    ::GetParent( aHwnd ), nullptr, ::GetModuleHandleW( nullptr ),
+                                    nullptr );
+
+    if( !plain )
+        return;
+
+    ::SendMessageW( plain, WM_SETFONT, ::SendMessageW( aHwnd, WM_GETFONT, 0, 0 ), FALSE );
+    LRESULT plainHeight = ::SendMessageW( plain, CB_GETITEMHEIGHT, (WPARAM) -1, 0 );
+    ::DestroyWindow( plain );
+
+    LRESULT ownHeight = ::SendMessageW( aHwnd, CB_GETITEMHEIGHT, (WPARAM) -1, 0 );
+
+    if( plainHeight > 0 && ownHeight >= 0 && ownHeight < plainHeight )
+        ::SendMessageW( aHwnd, CB_SETITEMHEIGHT, (WPARAM) -1, plainHeight );
+}
+
+
 LRESULT CALLBACK flatDropDownProc( HWND aHwnd, UINT aMsg, WPARAM aWParam, LPARAM aLParam,
                                    UINT_PTR aId, DWORD_PTR aData )
 {
@@ -484,6 +514,14 @@ LRESULT CALLBACK flatDropDownProc( HWND aHwnd, UINT aMsg, WPARAM aWParam, LPARAM
 
     switch( aMsg )
     {
+    // A new font sets the field's height afresh.
+    case WM_SETFONT:
+    {
+        LRESULT result = ::DefSubclassProc( aHwnd, aMsg, aWParam, aLParam );
+        matchPlainFieldHeight( aHwnd );
+        return result;
+    }
+
     case WM_NCDESTROY:
         ::RemovePropW( aHwnd, FLAT_HOVER );
         ::RemoveWindowSubclass( aHwnd, flatDropDownProc, aId );
@@ -559,6 +597,8 @@ void KIPLATFORM::UI::FlattenDropDown( wxWindow* aCtrl )
         return;
 
     ::SetWindowSubclass( hwnd, flatDropDownProc, 1, reinterpret_cast<DWORD_PTR>( aCtrl ) );
+    matchPlainFieldHeight( hwnd );
+    aCtrl->InvalidateBestSize();
     ::InvalidateRect( hwnd, nullptr, TRUE );
 }
 
