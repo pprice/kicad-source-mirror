@@ -309,7 +309,7 @@ bool TOOL_MANAGER::doRunAction( const std::string& aActionName, bool aNow, const
         return false;
     }
 
-    doRunAction( *action, aNow, aParam, aCommit );
+    doRunAction( *action, aNow, aParam, aCommit, true );
 
     return true;
 }
@@ -343,7 +343,23 @@ bool TOOL_MANAGER::doRunAction( const TOOL_ACTION& aAction, bool aNow, const ki:
     TOOL_EVENT event = aAction.MakeEvent();
 
     if( event.Category() == TC_COMMAND )
-        event.SetMousePosition( m_hotKeyPos.value_or( GetCursorPosition() ) );
+    {
+        VECTOR2D position = m_hotKeyPos.value_or( GetCursorPosition() );
+
+        // An action from outside KiCad (the IPC API, a plugin) is placed as its hotkey would be:
+        // where the pointer is, when it is over the canvas. The cursor can be stale then, as it
+        // is only brought up to date by the tools.
+        if( aFromAPI && !m_hotKeyPos && m_viewControls && GetToolHolder()
+                && GetToolHolder()->GetToolCanvas() )
+        {
+            VECTOR2D on = m_viewControls->GetMousePosition( false );
+
+            if( GetToolHolder()->GetToolCanvas()->GetClientRect().Contains( wxPoint( on.x, on.y ) ) )
+                position = GetMousePosition();
+        }
+
+        event.SetMousePosition( position );
+    }
 
     // Allow to override the action parameter
     if( aParam.has_value() )

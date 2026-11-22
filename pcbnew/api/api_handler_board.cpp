@@ -770,7 +770,9 @@ HANDLER_RESULT<RunActionResponse> API_HANDLER_BOARD::handleRunAction(
 
     RunActionResponse response;
 
-    if( toolManager()->RunAction( aCtx.Request.action(), true ) )
+    // RunAction( name, true ) would hand the action a bool as its parameter, in place of its own
+    // (the router's mode, a zoom's direction): actions are run now with no parameter given.
+    if( toolManager()->RunAction( aCtx.Request.action() ) )
         response.set_status( RunActionStatus::RAS_OK );
     else
         response.set_status( RunActionStatus::RAS_INVALID );
