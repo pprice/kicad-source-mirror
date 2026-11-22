@@ -67,6 +67,7 @@
 
 #include <kiplatform/app.h>
 #include <kiplatform/environment.h>
+#include <widgets/ui_common.h>
 
 // a dummy to quiet linking with EDA_BASE_FRAME::config();
 #include <kiface_base.h>
@@ -215,6 +216,8 @@ bool PGM_KICAD::OnPgmInit()
         else if( cfg->m_Appearance.app_theme == APP_THEME::AUTO )
             KIPLATFORM::APP::EnableDarkMode( false );
     }
+
+    KIUI::LoadInterfaceFont();
 
     // Add search paths to feed the PGM_KICAD::SysSearch() function,
     // currently limited in support to only look for project templates

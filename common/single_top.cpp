@@ -55,6 +55,7 @@
 
 #include <kiplatform/app.h>
 #include <kiplatform/environment.h>
+#include <widgets/ui_common.h>
 
 #include <git2.h>
 #include <git/git_backend.h>
@@ -379,6 +380,8 @@ bool PGM_SINGLE_TOP::OnPgmInit()
         else if( cfg->m_Appearance.app_theme == APP_THEME::AUTO )
             KIPLATFORM::APP::EnableDarkMode( false );
     }
+
+    KIUI::LoadInterfaceFont();
 
     // Create the API server thread once the app event loop exists
     m_api_server = std::make_unique<KICAD_API_SERVER>();

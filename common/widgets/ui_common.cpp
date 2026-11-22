@@ -40,7 +40,15 @@
 #include <dialog_shim.h>
 #include <pgm_base.h>
 #include <wx/settings.h>
+#include <wx/eventfilter.h>
+#include <wx/filefn.h>
+#include <wx/toplevel.h>
+#include <paths.h>
 #include <settings/common_settings.h>
+
+#if defined( __WXMSW__ )
+#include <wx/msw/wrapwin.h>
+#endif
 #include <bitmaps/bitmap_types.h>
 #include <string_utils.h>
 
@@ -108,9 +116,81 @@ wxFont KIUI::GetMonospacedUIFont( int aRelativeSize )
 }
 
 
+static const wxString INTERFACE_FACE = wxS( "Atkinson Hyperlegible Next" );
+static bool          s_interfaceFaceLoaded = false;
+
+
+/// Gives each top-level window the interface face as it is created, before its controls are.
+class INTERFACE_FONT_FILTER : public wxEventFilter
+{
+public:
+    int FilterEvent( wxEvent& aEvent ) override
+    {
+        if( aEvent.GetEventType() == wxEVT_CREATE )
+        {
+            if( wxTopLevelWindow* tlw = wxDynamicCast( aEvent.GetEventObject(), wxTopLevelWindow ) )
+            {
+                wxFont font = tlw->GetFont();
+
+                if( font.IsOk() && font.GetFaceName() != INTERFACE_FACE )
+                {
+                    font.SetFaceName( INTERFACE_FACE );
+                    tlw->SetFont( font );
+                }
+            }
+        }
+
+        return Event_Skip;
+    }
+};
+
+
+void KIUI::LoadInterfaceFont()
+{
+    static bool tried = false;
+
+    if( tried )
+        return;
+
+    tried = true;
+
+    const wxString folder = PATHS::GetStockDataPath() + wxS( "/resources/fonts/" );
+    bool           any = false;
+
+    for( const wxString& weight : { wxS( "Regular" ), wxS( "SemiBold" ), wxS( "Bold" ) } )
+    {
+        wxString file = folder + wxS( "AtkinsonHyperlegibleNext-" ) + weight + wxS( ".ttf" );
+
+        if( !wxFileExists( file ) )
+            continue;
+
+        // KiCad's wxWidgets is built without wxUSE_PRIVATE_FONTS: on Windows this is what
+        // wxFont::AddPrivateFont would do, a font for this process alone.
+#if defined( __WXMSW__ )
+        if( ::AddFontResourceExW( file.wc_str(), FR_PRIVATE, nullptr ) > 0 )
+            any = true;
+#elif wxUSE_PRIVATE_FONTS
+        if( wxFont::AddPrivateFont( file ) )
+            any = true;
+#endif
+    }
+
+    if( !any )
+        return;
+
+    s_interfaceFaceLoaded = true;
+
+    // Kept for the life of the process: a filter destroyed while still added asserts.
+    wxEvtHandler::AddFilter( new INTERFACE_FONT_FILTER() );
+}
+
+
 wxFont getGUIFont( wxWindow* aWindow, int aRelativeSize )
 {
     wxFont font = aWindow->GetFont();
+
+    if( s_interfaceFaceLoaded && font.GetFaceName() != INTERFACE_FACE )
+        font.SetFaceName( INTERFACE_FACE );
 
     font.SetPointSize( font.GetPointSize() + aRelativeSize );
 

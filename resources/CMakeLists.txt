@@ -169,3 +169,10 @@ endif()
 
 add_subdirectory(bitmaps_png)
 add_subdirectory(project_template)
+
+# Continuity's interface face, Atkinson Hyperlegible Next (SIL OFL, fonts/OFL.txt), loaded at
+# startup by KIUI::LoadInterfaceFont. Copied into the build so it runs from there too.
+file( COPY ${PROJECT_SOURCE_DIR}/resources/fonts/ DESTINATION ${PROJECT_BINARY_DIR}/resources/fonts )
+install( DIRECTORY ${PROJECT_SOURCE_DIR}/resources/fonts/
+    DESTINATION ${KICAD_DATA}/resources/fonts
+    )

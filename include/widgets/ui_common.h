@@ -68,6 +68,13 @@ KICOMMON_API wxSize GetTextSize( const wxString& aSingleLine, wxWindow* aWindow 
 
 KICOMMON_API wxFont GetMonospacedUIFont( int aRelativeSize = 0 );
 
+/**
+ * Load Continuity's interface face (Atkinson Hyperlegible Next, from resources/fonts) and give
+ * it to every top-level window as it is created, so their controls take it.  Once per process;
+ * where the files are missing the system face stays.
+ */
+KICOMMON_API void LoadInterfaceFont();
+
 KICOMMON_API wxFont GetControlFont( wxWindow* aWindow );
 KICOMMON_API wxFont GetInfoFont( wxWindow* aWindow );
 KICOMMON_API wxFont GetSmallInfoFont( wxWindow* aWindow );
