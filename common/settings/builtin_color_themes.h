@@ -594,4 +594,60 @@ static const std::map<int, COLOR4D> s_classicTheme =
             { LAYER_3D_B_COURTYARD,         COLOR4D( DARKGRAY ) }
         };
 
+// Continuity's colours (docs/ui.md in pprice/continuity), laid over the default theme above,
+// which then shows as "Continuity": a board's matte black, white silkscreen, gold for what is
+// acted on, magenta for a problem and nothing else, grey for what is quiet. Copper on no net is
+// dark grey, so with net colours on what is not joined recedes. Only what differs is listed.
+static const std::map<int, COLOR4D> s_continuityColors =
+        {
+            { LAYER_PCB_BACKGROUND,         CSS_COLOR( 17,  17,  17,  1 ) },
+            { LAYER_GRID,                   CSS_COLOR( 74,  74,  70,  1 ) },
+            { LAYER_GRID_AXES,              CSS_COLOR( 116, 116, 111, 1 ) },
+            { LAYER_SUBGRIDS,               CSS_COLOR( 116, 116, 111, 1 ) },
+            { LAYER_CURSOR,                 CSS_COLOR( 226, 184, 77,  1 ) },
+            { LAYER_SELECT_OVERLAY,         CSS_COLOR( 226, 184, 77,  1 ) },
+            { LAYER_AUX_ITEMS,              CSS_COLOR( 243, 243, 238, 1 ) },
+            { LAYER_ANCHOR,                 CSS_COLOR( 116, 116, 111, 1 ) },
+            { LAYER_POINTS,                 CSS_COLOR( 116, 116, 111, 1 ) },
+            { LAYER_LOCKED_ITEM_SHADOW,     CSS_COLOR( 162, 162, 157, 0.5 ) },
+            { LAYER_CONFLICTS_SHADOW,       CSS_COLOR( 255, 92,  191, 0.5 ) },
+            { LAYER_DRC_ERROR,              CSS_COLOR( 255, 92,  191, 0.85 ) },
+            { LAYER_DRC_WARNING,            CSS_COLOR( 255, 163, 220, 0.8 ) },
+            { LAYER_DRC_EXCLUSION,          CSS_COLOR( 162, 162, 157, 0.8 ) },
+            { LAYER_DRC_HIGHLIGHTED,        CSS_COLOR( 255, 92,  191, 1 ) },
+            { LAYER_RATSNEST,               CSS_COLOR( 162, 162, 157, 0.6 ) },
+            { LAYER_DRAWINGSHEET,           CSS_COLOR( 116, 116, 111, 1 ) },
+            { LAYER_PAGE_LIMITS,            CSS_COLOR( 74,  74,  70,  1 ) },
+            { LAYER_BOARD_OUTLINE_AREA,     CSS_COLOR( 27,  27,  27,  0.6 ) },
+            { LAYER_PAD_PLATEDHOLES,        CSS_COLOR( 162, 162, 157, 1 ) },
+            { LAYER_NON_PLATEDHOLES,        CSS_COLOR( 162, 162, 157, 1 ) },
+            { LAYER_VIA_HOLES,              CSS_COLOR( 162, 162, 157, 1 ) },
+            { LAYER_VIA_HOLEWALLS,          CSS_COLOR( 201, 201, 194, 1 ) },
+            { LAYER_VIA_NETNAMES,           CSS_COLOR( 17,  17,  17,  0.9 ) },
+            { F_Cu,                         CSS_COLOR( 94,  94,  90,  1 ) },
+            { B_Cu,                         CSS_COLOR( 78,  86,  96,  1 ) },
+            { F_SilkS,                      CSS_COLOR( 243, 243, 238, 1 ) },
+            { B_SilkS,                      CSS_COLOR( 201, 201, 194, 1 ) },
+            { Edge_Cuts,                    CSS_COLOR( 201, 201, 194, 1 ) },
+            { Margin,                       CSS_COLOR( 116, 116, 111, 1 ) },
+            { F_CrtYd,                      CSS_COLOR( 116, 116, 111, 1 ) },
+            { B_CrtYd,                      CSS_COLOR( 90,  98,  108, 1 ) },
+            { F_Fab,                        CSS_COLOR( 162, 162, 157, 1 ) },
+            { B_Fab,                        CSS_COLOR( 110, 118, 128, 1 ) },
+            { Dwgs_User,                    CSS_COLOR( 162, 162, 157, 1 ) },
+            { Cmts_User,                    CSS_COLOR( 91,  155, 255, 1 ) },
+        };
+
+static std::map<int, COLOR4D> withContinuity()
+{
+    std::map<int, COLOR4D> merged = s_defaultTheme;
+
+    for( const auto& [layer, color] : s_continuityColors )
+        merged[layer] = color;
+
+    return merged;
+}
+
+static const std::map<int, COLOR4D> s_ourDefaultTheme = withContinuity();
+
 #endif

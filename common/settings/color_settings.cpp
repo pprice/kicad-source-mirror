@@ -49,8 +49,8 @@ COLOR_SETTINGS::COLOR_SETTINGS( const wxString& aFilename, bool aAbsolutePath ) 
                                             &m_overrideSchItemColors, false ) );
 
 #define EMPLACE_COLOR_PARAM( x, y ) \
-    wxASSERT( s_defaultTheme.count( y ) ); \
-    m_params.emplace_back( new COLOR_MAP_PARAM( x, y, s_defaultTheme.at( y ), &m_colors ) );
+    wxASSERT( s_ourDefaultTheme.count( y ) ); \
+    m_params.emplace_back( new COLOR_MAP_PARAM( x, y, s_ourDefaultTheme.at( y ), &m_colors ) );
 
     EMPLACE_COLOR_PARAM( "schematic.anchor",            LAYER_SCHEMATIC_ANCHOR       );
     EMPLACE_COLOR_PARAM( "schematic.aux_items",         LAYER_SCHEMATIC_AUX_ITEMS    );
@@ -111,14 +111,14 @@ COLOR_SETTINGS::COLOR_SETTINGS( const wxString& aFilename, bool aAbsolutePath ) 
     for( int i = 0, id = GERBVIEW_LAYER_ID_START;
          id < GERBER_DRAWLAYERS_COUNT + GERBVIEW_LAYER_ID_START; ++i, ++id )
     {
-        if( !s_defaultTheme.count( id ) )
+        if( !s_ourDefaultTheme.count( id ) )
         {
             wxLogTrace( "colors", "Missing default color for gerbview layer %d", id );
             continue;
         }
 
         m_params.emplace_back( new COLOR_MAP_PARAM( "gerbview.layers." + std::to_string( i ), id,
-                                                    s_defaultTheme.at( id ), &m_colors ) );
+                                                    s_ourDefaultTheme.at( id ), &m_colors ) );
     }
 
     EMPLACE_COLOR_PARAM( "board.anchor",                   LAYER_ANCHOR             );
@@ -275,18 +275,18 @@ COLOR_SETTINGS::COLOR_SETTINGS( const wxString& aFilename, bool aAbsolutePath ) 
         PCB_LAYER_ID pcb_layer = Map3DLayerToPCBLayer( layer );
 
         m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.user_" + std::to_string( idx + 1 ),
-                                                    layer, s_defaultTheme.at( pcb_layer ),
+                                                    layer, s_ourDefaultTheme.at( pcb_layer ),
                                                     &m_colors ) );
     }
 
     m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.f_fab", LAYER_3D_F_FAB,
-                                                s_defaultTheme.at( F_Fab ), &m_colors ) );
+                                                s_ourDefaultTheme.at( F_Fab ), &m_colors ) );
     m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.b_fab", LAYER_3D_B_FAB,
-                                                s_defaultTheme.at( B_Fab ), &m_colors ) );
+                                                s_ourDefaultTheme.at( B_Fab ), &m_colors ) );
     m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.f_courtyard", LAYER_3D_F_COURTYARD,
-                                                s_defaultTheme.at( F_CrtYd ), &m_colors ) );
+                                                s_ourDefaultTheme.at( F_CrtYd ), &m_colors ) );
     m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.b_courtyard", LAYER_3D_B_COURTYARD,
-                                                s_defaultTheme.at( B_CrtYd ), &m_colors ) );
+                                                s_ourDefaultTheme.at( B_CrtYd ), &m_colors ) );
 
     registerMigration( 0, 1, std::bind( &COLOR_SETTINGS::migrateSchema0to1, this ) );
 
@@ -475,7 +475,7 @@ void COLOR_SETTINGS::SetColor( int aLayer, const COLOR4D& aColor )
 std::vector<COLOR_SETTINGS*> COLOR_SETTINGS::CreateBuiltinColorSettings()
 {
     COLOR_SETTINGS* defaultTheme = new COLOR_SETTINGS( COLOR_BUILTIN_DEFAULT );
-    defaultTheme->SetName( _( "KiCad Default" ) );
+    defaultTheme->SetName( _( "Continuity" ) );
     defaultTheme->m_writeFile = false;
     defaultTheme->Load();   // We can just get the colors out of the param defaults for this one
 

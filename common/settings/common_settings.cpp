@@ -71,14 +71,14 @@ COMMON_SETTINGS::COMMON_SETTINGS() :
      */
 #if defined( __WXGTK__ ) || defined( __WXMSW__ )
     m_params.emplace_back( new PARAM_ENUM<ICON_THEME>( "appearance.icon_theme",
-            &m_Appearance.icon_theme, ICON_THEME::AUTO, ICON_THEME::LIGHT, ICON_THEME::AUTO ) );
+            &m_Appearance.icon_theme, ICON_THEME::DARK, ICON_THEME::LIGHT, ICON_THEME::AUTO ) );
 #else
     m_Appearance.icon_theme = ICON_THEME::AUTO;
 #endif
 
 #if defined( __WXMSW__ )
     m_params.emplace_back( new PARAM_ENUM<APP_THEME>( "appearance.app_theme", &m_Appearance.app_theme,
-                                                       APP_THEME::AUTO, APP_THEME::LIGHT, APP_THEME::AUTO ) );
+                                                       APP_THEME::DARK, APP_THEME::LIGHT, APP_THEME::AUTO ) );
 #else
     m_Appearance.app_theme = APP_THEME::AUTO;
 #endif

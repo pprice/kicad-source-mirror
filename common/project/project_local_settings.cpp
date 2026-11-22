@@ -35,7 +35,7 @@ PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxStrin
                        /* aCreateIfMissing = */ true, /* aCreateIfDefault = */ false,
                        /* aWriteFile = */ true ),
         m_ActiveLayer( UNDEFINED_LAYER ),
-        m_ContrastModeDisplay( HIGH_CONTRAST_MODE::NORMAL ),
+        m_ContrastModeDisplay( HIGH_CONTRAST_MODE::DIMMED ),
         m_NetColorMode( NET_COLOR_MODE::RATSNEST ),
         m_AutoTrackWidth( true ),
         m_ZoneDisplayMode( ZONE_DISPLAY_MODE::SHOW_FILLED ),
@@ -181,7 +181,7 @@ PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxStrin
                            &m_ActiveLayerPreset, "" ) );
 
     m_params.emplace_back( new PARAM_ENUM<HIGH_CONTRAST_MODE>( "board.high_contrast_mode",
-                           &m_ContrastModeDisplay, HIGH_CONTRAST_MODE::NORMAL,
+                           &m_ContrastModeDisplay, HIGH_CONTRAST_MODE::DIMMED,
                            HIGH_CONTRAST_MODE::NORMAL, HIGH_CONTRAST_MODE::HIDDEN ) );
 
     m_params.emplace_back( new PARAM<double>( "board.opacity.tracks", &m_TrackOpacity,
