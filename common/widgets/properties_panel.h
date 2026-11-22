@@ -29,6 +29,7 @@
 #include <bitmaps/bitmaps_list.h>
 #include <vector>
 #include <memory>
+#include <set>
 #include <functional>
 
 
@@ -204,6 +205,9 @@ protected:
     };
 
     std::vector<CATEGORY_BUTTON> m_categoryButtons;
+
+    /// Groups opened by hand: kept open when the selection changes, where the rest are folded.
+    std::set<wxString> m_openGroups;
 
     /// True while settling a pending label edit synchronously (see settlePendingLabelEdit).
     bool m_resolvingPendingKey = false;

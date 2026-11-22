@@ -165,14 +165,20 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     m_grid->MakeColumnEditable( 0 );
 
     Bind( wxEVT_PG_ITEM_EXPANDED,
-          [&]( wxPropertyGridEvent& )
+          [&]( wxPropertyGridEvent& aEvent )
           {
+              if( aEvent.GetProperty() && aEvent.GetProperty()->IsCategory() )
+                  m_openGroups.insert( aEvent.GetProperty()->GetLabel() );
+
               positionCategoryButtons();
           } );
 
     Bind( wxEVT_PG_ITEM_COLLAPSED,
-          [&]( wxPropertyGridEvent& )
+          [&]( wxPropertyGridEvent& aEvent )
           {
+              if( aEvent.GetProperty() && aEvent.GetProperty()->IsCategory() )
+                  m_openGroups.erase( aEvent.GetProperty()->GetLabel() );
+
               positionCategoryButtons();
           } );
 
@@ -490,19 +496,56 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
 
     const wxString unspecifiedGroupCaption = _( "Basic Properties" );
 
+    // Continuity's "important first" (docs/kicad-look.md): what an item is and where, its net,
+    // size and layer, lifted out of their groups into one at the top, and the rest folded until
+    // opened. A group opened by hand stays open for the next selection.
+    static const std::vector<wxString> glance = { wxS( "Reference" ), wxS( "Value" ),  wxS( "Net" ),
+                                                  wxS( "Net Class" ), wxS( "Width" ),  wxS( "Diameter" ),
+                                                  wxS( "Hole" ),      wxS( "Pad Number" ), wxS( "Size X" ),
+                                                  wxS( "Size Y" ),    wxS( "Layer" ),  wxS( "Layer Top" ),
+                                                  wxS( "Layer Bottom" ) };
+    std::vector<wxPGProperty*> atAGlance;
+
+    for( const wxString& name : glance )
+    {
+        for( auto& [groupName, properties] : pgPropGroups )
+        {
+            auto it = std::ranges::find_if( properties,
+                                            [&]( wxPGProperty* aProp )
+                                            {
+                                                return aProp->GetName() == name;
+                                            } );
+
+            if( it != properties.end() )
+            {
+                atAGlance.push_back( *it );
+                properties.erase( it );
+                break;
+            }
+        }
+    }
+
+    if( !atAGlance.empty() )
+    {
+        m_grid->Append( new wxPropertyCategory( _( "At a Glance" ) ) );
+
+        for( wxPGProperty* property : atAGlance )
+            m_grid->Append( property );
+    }
+
     for( const wxString& groupName : groupDisplayOrder )
     {
-        if( !pgPropGroups.contains( groupName )
-            && std::ranges::none_of( m_categoryButtons,
-                                     [&]( const CATEGORY_BUTTON& aButton )
-                                     {
-                                         return aButton.groupKey == groupName
-                                                && ( aButton.forceCategory || groupName == _HKI( "Custom Properties" ) )
-                                                && ( !aButton.enableFunc || aButton.enableFunc() );
-                                     } ) )
-        {
+        bool hasButton = std::ranges::any_of( m_categoryButtons,
+                                              [&]( const CATEGORY_BUTTON& aButton )
+                                              {
+                                                  return aButton.groupKey == groupName
+                                                         && ( aButton.forceCategory
+                                                              || groupName == _HKI( "Custom Properties" ) )
+                                                         && ( !aButton.enableFunc || aButton.enableFunc() );
+                                              } );
+
+        if( ( !pgPropGroups.contains( groupName ) || pgPropGroups[groupName].empty() ) && !hasButton )
             continue;
-        }
 
         std::vector<wxPGProperty*> properties;
 
@@ -524,6 +567,9 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
 
         for( wxPGProperty* property : properties )
             m_grid->Append( property );
+
+        if( !atAGlance.empty() && !m_openGroups.contains( groupItem->GetLabel() ) )
+            m_grid->Collapse( groupItem );
     }
 
     RecalculateSplitterPos();
