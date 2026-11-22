@@ -30,7 +30,6 @@
 #include "pns_debug_decorator.h"
 #include "pns_arc.h"
 #include "pns_utils.h"
-#include "pns_diff_pair_symmetry.h"
 
 #include <base_units.h>
 #include <geometry/shape_circle.h>
@@ -388,27 +387,19 @@ bool DIFF_PAIR_PLACER::rhWalkOnly( const VECTOR2I& aP )
 
 bool DIFF_PAIR_PLACER::route( const VECTOR2I& aP )
 {
-    bool ok = false;
-
     switch( Settings().Mode() )
     {
     case RM_MarkObstacles:
-        ok = rhMarkObstacles( aP );
-        break;
+        return rhMarkObstacles( aP );
     case RM_Walkaround:
-        ok = rhWalkOnly( aP );
-        break;
+        return rhWalkOnly( aP );
     case RM_Shove:
-        ok = rhShoveOnly( aP );
-        break;
+        return rhShoveOnly( aP );
     default:
         break;
     }
 
-    if( ok )
-        makeSymmetric();
-
-    return ok;
+    return false;
 }
 
 
@@ -484,11 +475,23 @@ void DIFF_PAIR_PLACER::makeSymmetric()
     }
     else if( m_snapOnTarget && m_target && m_target->PrimP() && m_target->PrimN() )
     {
-        if( m_target->AnchorP() != end.anchor[0] || m_target->AnchorN() != end.anchor[1] )
-            return;
-
         const ITEM* endP = m_target->PrimP();
         const ITEM* endN = m_target->PrimN();
+
+        // A pair wider than the pins it meets stops short of them, at a gateway beside them;
+        // drawn again from its pads it meets them, necked down where a rule asks
+        const int nearby = 2 * ( m_sizes.DiffPairWidth() + m_sizes.DiffPairGap() );
+
+        if( endP->OfKind( pvMask ) && endN->OfKind( pvMask )
+            && ( m_target->AnchorP() - end.anchor[0] ).EuclideanNorm() <= nearby
+            && ( m_target->AnchorN() - end.anchor[1] ).EuclideanNorm() <= nearby )
+        {
+            end.anchor[0] = m_target->AnchorP();
+            end.anchor[1] = m_target->AnchorN();
+        }
+
+        if( m_target->AnchorP() != end.anchor[0] || m_target->AnchorN() != end.anchor[1] )
+            return;
 
         if( endP->OfKind( pvMask ) && endN->OfKind( pvMask ) )
         {
@@ -558,12 +561,64 @@ void DIFF_PAIR_PLACER::makeSymmetric()
             };
 
     params.linesClear =
-            [&]( const SHAPE_LINE_CHAIN& aP, const SHAPE_LINE_CHAIN& aN ) -> bool
+            [&]( const std::vector<DP_SYMMETRY_PART> aParts[2] ) -> bool
             {
-                LINE lineP( m_currentTrace.PLine(), aP );
-                LINE lineN( m_currentTrace.NLine(), aN );
-                return clear( lineP ) && clear( lineN );
+                for( int i = 0; i < 2; i++ )
+                {
+                    for( const DP_SYMMETRY_PART& part : aParts[i] )
+                    {
+                        LINE line( i == 0 ? m_currentTrace.PLine() : m_currentTrace.NLine(), part.line );
+                        line.SetWidth( part.width );
+
+                        if( !clear( line ) )
+                            return false;
+                    }
+                }
+
+                return true;
             };
+
+    // The width and gap the rules give a track of the pair that wide at a point, as the router
+    // takes them where a pair starts
+    RULE_RESOLVER* resolver = Router()->GetRuleResolver();
+
+    params.sizeAt =
+            [&]( int aLine, const VECTOR2I& aAt, int aWidth ) -> std::pair<int, int>
+            {
+                SEGMENT probe;
+                probe.SetEnds( aAt, aAt );
+                probe.SetWidth( aWidth );
+                probe.SetLayer( m_currentLayer );
+                probe.SetNet( aLine == 0 ? m_netP : m_netN );
+
+                SEGMENT coupled;
+                coupled.SetEnds( aAt, aAt );
+                coupled.SetWidth( aWidth );
+                coupled.SetLayer( m_currentLayer );
+                coupled.SetNet( aLine == 0 ? m_netN : m_netP );
+
+                std::pair<int, int> size( params.width, params.gap );
+                CONSTRAINT          constraint;
+
+                if( resolver->QueryConstraint( CONSTRAINT_TYPE::CT_WIDTH, &probe, &coupled, m_currentLayer,
+                                               &constraint )
+                    && constraint.m_Value.HasOpt() )
+                {
+                    size.first = constraint.m_Value.Opt();
+                }
+
+                if( resolver->QueryConstraint( CONSTRAINT_TYPE::CT_DIFF_PAIR_GAP, &probe, &coupled, m_currentLayer,
+                                               &constraint )
+                    && constraint.m_Value.HasOpt() )
+                {
+                    size.second = constraint.m_Value.Opt();
+                }
+
+                return size;
+            };
+
+    m_symmetricParts[0].clear();
+    m_symmetricParts[1].clear();
 
     std::optional<DP_SYMMETRY_RESULT> symmetric = SymmetricPair( p, n, start, end, params );
 
@@ -573,6 +628,13 @@ void DIFF_PAIR_PLACER::makeSymmetric()
     PNS_DBG( Dbg(), Message, wxString::Format( "symmetric pair: %d bumps", symmetric->bumps ) );
 
     m_currentTrace.SetShape( symmetric->p, symmetric->n );
+
+    // Necked down or widened on the way: each run of one width is a line of its own
+    if( symmetric->parts[0].size() > 1 || symmetric->parts[1].size() > 1 )
+    {
+        m_symmetricParts[0] = symmetric->parts[0];
+        m_symmetricParts[1] = symmetric->parts[1];
+    }
 }
 
 
@@ -1454,6 +1516,9 @@ bool DIFF_PAIR_PLACER::FixRoute( const VECTOR2I& aP, ITEM* aEndItem, bool aForce
         m_currentTrace.SetShape( newP, newN );
     }
 
+    // Only as a piece is fixed: drawn again on every move it made the head lag
+    makeSymmetric();
+
     if( m_currentTrace.EndsWithVias() )
     {
         m_lastNode->Add( Clone( m_currentTrace.PLine().Via() ) );
@@ -1470,6 +1535,30 @@ bool DIFF_PAIR_PLACER::FixRoute( const VECTOR2I& aP, ITEM* aEndItem, bool aForce
 
     LINE &lineP = m_currentTrace.PLine();
     LINE &lineN = m_currentTrace.NLine();
+
+    // Where the pair changes width on the way, every run but the last goes in as a line of its
+    // own; the last stays the trace's line, so the next stretch goes on from it
+    for( int i = 0; i < 2; i++ )
+    {
+        LINE& line = i == 0 ? lineP : lineN;
+
+        if( m_symmetricParts[i].size() < 2 )
+            continue;
+
+        for( size_t k = 0; k + 1 < m_symmetricParts[i].size(); k++ )
+        {
+            LINE run( line, m_symmetricParts[i][k].line );
+            run.ClearLinks();
+            run.SetWidth( m_symmetricParts[i][k].width );
+            m_lastNode->Add( run );
+        }
+
+        line.SetShape( m_symmetricParts[i].back().line );
+        line.SetWidth( m_symmetricParts[i].back().width );
+    }
+
+    m_symmetricParts[0].clear();
+    m_symmetricParts[1].clear();
 
     m_lastNode->Add( lineP );
     m_lastNode->Add( lineN );

@@ -31,6 +31,7 @@
 #include "pns_line.h"
 #include "pns_algo_base.h"
 #include "pns_diff_pair.h"
+#include "pns_diff_pair_symmetry.h"
 
 #include "pns_placement_algo.h"
 
@@ -208,7 +209,8 @@ private:
     /**
      * Redraw the current trace as two lines either side of one centre line, opened evenly at its
      * pads, its arcs about one centre and its bends' skew put back in bumps (SymmetricPair).
-     * Left as the router laid it where no such pair keeps clear.
+     * Left as the router laid it where no such pair keeps clear.  Called as a piece is fixed,
+     * not as the head moves.
      */
     void makeSymmetric();
 
@@ -302,6 +304,9 @@ private:
 
     /// How much longer the P line is than the N line over what this placement has fixed so far
     double m_skewSoFar;
+
+    ///< The symmetric pass's runs of one width for each line, where it changed the pair's width
+    std::vector<DP_SYMMETRY_PART> m_symmetricParts[2];
 };
 
 }

@@ -572,6 +572,14 @@ BOARD_ITEM* PNS_PCBNEW_RULE_RESOLVER::getBoardItem( const PNS::ITEM* aItem, PCB_
         m_dummyTracks[aIdx].SetNet( static_cast<NETINFO_ITEM*>( aItem->Net() ) );
         m_dummyTracks[aIdx].SetStart( aItem->Anchor( 0 ) );
         m_dummyTracks[aIdx].SetEnd( aItem->Anchor( 1 ) );
+
+        // As wide as the item, not as the last line a rule was looked up for: a rule on where a
+        // track lies (in a courtyard, say) sees its copper
+        if( aItem->Kind() == PNS::ITEM::SEGMENT_T )
+            m_dummyTracks[aIdx].SetWidth( static_cast<const PNS::SEGMENT*>( aItem )->Width() );
+        else
+            m_dummyTracks[aIdx].SetWidth( static_cast<const PNS::LINE*>( aItem )->Width() );
+
         return &m_dummyTracks[aIdx];
 
     default:

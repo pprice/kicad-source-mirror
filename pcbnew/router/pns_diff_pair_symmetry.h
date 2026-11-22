@@ -22,6 +22,8 @@
 
 #include <functional>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include <math/vector2d.h>
 #include <geometry/shape_line_chain.h>
@@ -47,6 +49,14 @@ struct DP_SYMMETRY_END
 };
 
 
+/// A run of one line at one width.
+struct DP_SYMMETRY_PART
+{
+    SHAPE_LINE_CHAIN line;
+    int              width = 0;
+};
+
+
 struct DP_SYMMETRY_PARAMS
 {
     int width = 0;
@@ -61,8 +71,17 @@ struct DP_SYMMETRY_PARAMS
     /// Whether the corners of the bumps put on one line (0 for P, 1 for N) keep clear.
     std::function<bool( int, const SHAPE_LINE_CHAIN& )> bumpClear;
 
-    /// Whether the two lines as drawn keep clear of everything around them.
-    std::function<bool( const SHAPE_LINE_CHAIN&, const SHAPE_LINE_CHAIN& )> linesClear;
+    /// Whether the two lines as drawn, each in runs of one width, keep clear of everything around them.
+    std::function<bool( const std::vector<DP_SYMMETRY_PART> aParts[2] )> linesClear;
+
+    /**
+     * The width and gap the rules give the pair at a point of one of its lines (0 for P, 1 for N),
+     * for a track that wide there.  Where they give one end another size than the other, the pair
+     * takes each end's size and steps between them where the rule stops: necked down into a part
+     * whose pins are closer than the pair, and widened again on the way out.  Unset, the pair keeps
+     * its width and gap all the way.
+     */
+    std::function<std::pair<int, int>( int, const VECTOR2I&, int )> sizeAt;
 };
 
 
@@ -70,6 +89,9 @@ struct DP_SYMMETRY_RESULT
 {
     SHAPE_LINE_CHAIN p;
     SHAPE_LINE_CHAIN n;
+
+    /// Each line in runs of one width, from the start: one run where the pair keeps its size.
+    std::vector<DP_SYMMETRY_PART> parts[2];
 
     /// How many deskewing bumps went in.
     int bumps = 0;
@@ -92,6 +114,11 @@ struct DP_SYMMETRY_RESULT
  * the next bend takes back within 2.54 mm is left to it.
  *
  * Free ends keep their points exactly, so a stretch joins the one before or after it.
+ *
+ * Where the rules give one end another width or gap (sizeAt), the lines take it there, up to
+ * where the rule stops, and step to the pair's own size at 45 degrees as tracks of the narrower
+ * width; where the pair would not keep clear at its own width so near, the narrow run goes on
+ * further.  Each line comes back in runs of one width.
  *
  * @return the two lines, or nothing where no symmetric pair can be drawn there that keeps clear.
  */
