@@ -110,6 +110,7 @@
 #include <widgets/appearance_controls.h>
 #include <widgets/wx_infobar.h>
 #include <router/pns_drag_algo.h>
+#include <tools/track_corners.h>
 #include <router/pns_kicad_iface.h>
 #include <router/pns_line.h>
 #include <router/pns_node.h>
@@ -176,6 +177,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
     registerHandler<RouteDiffPair, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteDiffPair );
     registerHandler<DragTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleDragTrack );
+    registerHandler<ConvertCorners, ConvertCornersResponse>( &API_HANDLER_PCB::handleConvertCorners );
     registerHandler<RenderView, RenderViewResponse>( &API_HANDLER_PCB::handleRenderView );
     registerHandler<GetEditorState, EditorStateResponse>( &API_HANDLER_PCB::handleGetEditorState );
     registerHandler<TakeControl, EditorStateResponse>( &API_HANDLER_PCB::handleTakeControl );
@@ -2652,6 +2654,114 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleDragTrack(
     if( response.completed() && !req.dry_run() )
     {
         commit->Push( _( "Drag Track" ) );
+        onModified();
+    }
+    else
+    {
+        commit->Revert();
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<ConvertCornersResponse> API_HANDLER_PCB::handleConvertCorners(
+        const HANDLER_CONTEXT<ConvertCorners>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    const ConvertCorners& req = aCtx.Request;
+
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( req.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    auto badRequest =
+            []( const std::string& aMessage ) -> tl::unexpected<ApiResponseStatus>
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( aMessage );
+                return tl::unexpected( e );
+            };
+
+    BOARD* board = this->board();
+
+    if( req.style() != CornerStyle::CS_ARCS && req.style() != CornerStyle::CS_45 )
+        return badRequest( "style must be CS_ARCS or CS_45" );
+
+    std::vector<PCB_TRACK*> tracks;
+    std::set<PCB_TRACK*>    taken;
+
+    auto take =
+            [&]( PCB_TRACK* aTrack )
+            {
+                if( aTrack->Type() != PCB_VIA_T && taken.insert( aTrack ).second )
+                    tracks.push_back( aTrack );
+            };
+
+    for( const kiapi::common::types::KIID& id : req.items() )
+    {
+        std::optional<BOARD_ITEM*> found = getItemById( KIID( id.value() ) );
+
+        if( !found )
+            return badRequest( fmt::format( "no item {} on the board", id.value() ) );
+
+        if( ( *found )->Type() != PCB_TRACE_T && ( *found )->Type() != PCB_ARC_T )
+            return badRequest( fmt::format( "{} is not a track or arc", id.value() ) );
+
+        take( static_cast<PCB_TRACK*>( *found ) );
+    }
+
+    for( const std::string& name : req.nets() )
+    {
+        NETINFO_ITEM* net = board->FindNet( wxString::FromUTF8( name ) );
+
+        if( !net )
+            return badRequest( fmt::format( "no net {} on the board", name ) );
+
+        for( PCB_TRACK* track : board->Tracks() )
+        {
+            if( track->GetNetCode() == net->GetNetCode() )
+                take( track );
+        }
+    }
+
+    if( tracks.empty() )
+        return badRequest( "no tracks given: name items or nets" );
+
+    if( std::optional<std::string> why = prepareForRouter( board, !frame() ) )
+        return badRequest( *why );
+
+    int maxRadius = req.has_max_radius() ? (int) req.max_radius().value_nm() : 0;
+
+    std::unique_ptr<BOARD_COMMIT> commit( static_cast<BOARD_COMMIT*>( createCommit().release() ) );
+
+    TRACK_CORNERS_RESULT result = ConvertTrackCorners(
+            board, tracks,
+            req.style() == CornerStyle::CS_ARCS ? TRACK_CORNER_STYLE::ARCS
+                                                : TRACK_CORNER_STYLE::MITERED_45,
+            maxRadius, *commit );
+
+    ConvertCornersResponse response;
+    response.set_changed( result.m_changed );
+
+    for( const wxString& left : result.m_left )
+        response.add_left( left.ToUTF8() );
+
+    for( BOARD_ITEM* item : result.m_added )
+        item->Serialize( *response.add_added() );
+
+    for( BOARD_ITEM* item : result.m_modified )
+        item->Serialize( *response.add_modified() );
+
+    for( const KIID& id : result.m_removed )
+        response.add_removed()->set_value( id.AsStdString() );
+
+    if( result.m_changed > 0 && !req.dry_run() )
+    {
+        commit->Push( req.style() == CornerStyle::CS_ARCS ? _( "Round Corners" )
+                                                          : _( "45 Degree Corners" ) );
         onModified();
     }
     else

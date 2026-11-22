@@ -530,6 +530,7 @@ set( PCBNEW_CLASS_SRCS
     tools/drc_tool.cpp
     tools/edit_tool.cpp
     tools/edit_tool_move_fct.cpp
+    tools/track_corners.cpp
     tools/graphic_edit.cpp
     tools/graphic_edit_tool.cpp
     tools/graphic_extend.cpp

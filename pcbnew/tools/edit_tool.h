@@ -136,6 +136,12 @@ public:
     int FilletTracks( const TOOL_EVENT& aEvent );
 
     /**
+     * Turn the corners of the selected tracks into arcs, or their arcs into 45 degree corners,
+     * keeping every clearance.
+     */
+    int ConvertTrackCorners( const TOOL_EVENT& aEvent );
+
+    /**
      * "Modify" graphical lines. This includes operations such as filleting, chamfering,
      * extending to meet.
      */

@@ -130,6 +130,9 @@ private:
 
     HANDLER_RESULT<RouteTrackResponse> handleDragTrack( const HANDLER_CONTEXT<DragTrack>& aCtx );
 
+    HANDLER_RESULT<ConvertCornersResponse> handleConvertCorners(
+            const HANDLER_CONTEXT<ConvertCorners>& aCtx );
+
     HANDLER_RESULT<RenderViewResponse> handleRenderView( const HANDLER_CONTEXT<RenderView>& aCtx );
 
     /// Lays a track or a pair with the router; RouteTrack and RouteDiffPair share their fields

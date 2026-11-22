@@ -1143,6 +1143,20 @@ TOOL_ACTION PCB_ACTIONS::filletTracks( TOOL_ACTION_ARGS()
         .FriendlyName( _( "Fillet Tracks" ) )
         .Tooltip( _( "Adds arcs tangent to the selected straight track segments" ) ) );
 
+TOOL_ACTION PCB_ACTIONS::roundTrackCorners( TOOL_ACTION_ARGS()
+        .Name( "pcbnew.InteractiveEdit.roundTrackCorners" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Round Corners..." ) )
+        .Tooltip( _( "Turns the corners of the selected tracks into the widest arcs that keep "
+                     "their clearances" ) ) );
+
+TOOL_ACTION PCB_ACTIONS::miterTrackCorners( TOOL_ACTION_ARGS()
+        .Name( "pcbnew.InteractiveEdit.miterTrackCorners" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "45 Degree Corners" ) )
+        .Tooltip( _( "Turns the selected arcs into corners at 45 degrees, keeping their "
+                     "clearances" ) ) );
+
 TOOL_ACTION PCB_ACTIONS::filletLines( TOOL_ACTION_ARGS()
         .Name( "pcbnew.InteractiveEdit.filletLines" )
         .Scope( AS_GLOBAL )

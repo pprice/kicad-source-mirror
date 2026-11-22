@@ -32,6 +32,7 @@
 #include <footprint.h>
 #include <increment.h>
 #include <pcb_shape.h>
+#include <tools/track_corners.h>
 #include <pcb_group.h>
 #include <constraints/constraint_copy.h>
 #include <constraints/pcb_constraint.h>
@@ -919,6 +920,10 @@ bool EDIT_TOOL::Init()
                                                       && SELECTION_CONDITIONS::OnlyTypes( trackTypes ) );
 
     menu.AddItem( PCB_ACTIONS::filletTracks,      SELECTION_CONDITIONS::OnlyTypes( trackTypes ) );
+    menu.AddItem( PCB_ACTIONS::roundTrackCorners, SELECTION_CONDITIONS::OnlyTypes( trackTypes )
+                                                      && SELECTION_CONDITIONS::HasType( PCB_TRACE_T ) );
+    menu.AddItem( PCB_ACTIONS::miterTrackCorners, SELECTION_CONDITIONS::OnlyTypes( trackTypes )
+                                                      && SELECTION_CONDITIONS::HasType( PCB_ARC_T ) );
 
     menu.AddSeparator();
 
@@ -1622,6 +1627,90 @@ int EDIT_TOOL::FilletTracks( const TOOL_EVENT& aEvent )
         frame()->ShowInfoBarMsg( _( "Unable to fillet the selected track segments." ) );
     else if( didOneAttemptFail )
         frame()->ShowInfoBarMsg( _( "Some of the track segments could not be filleted." ) );
+
+    return 0;
+}
+
+
+int EDIT_TOOL::ConvertTrackCorners( const TOOL_EVENT& aEvent )
+{
+    // The widest arc tried, kept for the next time
+    static int maxRadius = pcbIUScale.mmToIU( 2 );
+
+    const bool toArcs = aEvent.IsAction( &PCB_ACTIONS::roundTrackCorners );
+
+    PCB_SELECTION& selection = m_selectionTool->RequestSelection(
+            []( const VECTOR2I& aPt, GENERAL_COLLECTOR& aCollector, PCB_SELECTION_TOOL* sTool )
+            {
+                for( int i = aCollector.GetCount() - 1; i >= 0; --i )
+                {
+                    BOARD_ITEM* item = aCollector[i];
+
+                    if( item->Type() != PCB_TRACE_T && item->Type() != PCB_ARC_T )
+                        aCollector.Remove( item );
+                }
+
+                sTool->FilterCollectorForLockedItems( aCollector );
+            } );
+
+    if( m_selectionTool->ReportFilteredLockedItems() )
+        return 0;
+
+    std::vector<PCB_TRACK*> tracks;
+
+    for( EDA_ITEM* item : selection )
+    {
+        if( item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T )
+            tracks.push_back( static_cast<PCB_TRACK*>( item ) );
+    }
+
+    if( tracks.empty() )
+        return 0;
+
+    if( toArcs )
+    {
+        WX_UNIT_ENTRY_DIALOG dlg( frame(), _( "Round Corners" ), _( "Widest radius:" ), maxRadius );
+
+        if( dlg.ShowModal() == wxID_CANCEL || dlg.GetValue() <= 0 )
+            return 0;
+
+        maxRadius = dlg.GetValue();
+    }
+
+    BOARD_COMMIT         commit( this );
+    TRACK_CORNERS_RESULT result = ::ConvertTrackCorners(
+            board(), tracks, toArcs ? TRACK_CORNER_STYLE::ARCS : TRACK_CORNER_STYLE::MITERED_45,
+            maxRadius, commit );
+
+    if( result.m_changed > 0 )
+    {
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
+        commit.Push( toArcs ? _( "Round Corners" ) : _( "45 Degree Corners" ) );
+
+        for( BOARD_ITEM* item : result.m_added )
+            m_selectionTool->AddItemToSel( item );
+
+        for( BOARD_ITEM* item : result.m_modified )
+            m_selectionTool->AddItemToSel( item );
+
+        m_toolMgr->ProcessEvent( EVENTS::SelectedItemsModified );
+    }
+    else
+    {
+        commit.Revert();
+    }
+
+    if( result.m_changed == 0 && result.m_left.empty() )
+    {
+        frame()->ShowInfoBarMsg( toArcs ? _( "The selection has no corners between straight tracks." )
+                                        : _( "The selection has no arcs." ) );
+    }
+    else if( !result.m_left.empty() )
+    {
+        frame()->ShowInfoBarMsg( wxString::Format( _( "%d changed, %d left as they were: %s" ),
+                                                   result.m_changed, (int) result.m_left.size(),
+                                                   result.m_left.front() ) );
+    }
 
     return 0;
 }
@@ -4374,6 +4463,8 @@ void EDIT_TOOL::setTransitions()
     Go( &EDIT_TOOL::ChangeTrackLayer,         PCB_ACTIONS::changeTrackLayerNext.MakeEvent() );
     Go( &EDIT_TOOL::ChangeTrackLayer,         PCB_ACTIONS::changeTrackLayerPrev.MakeEvent() );
     Go( &EDIT_TOOL::FilletTracks,             PCB_ACTIONS::filletTracks.MakeEvent() );
+    Go( &EDIT_TOOL::ConvertTrackCorners,      PCB_ACTIONS::roundTrackCorners.MakeEvent() );
+    Go( &EDIT_TOOL::ConvertTrackCorners,      PCB_ACTIONS::miterTrackCorners.MakeEvent() );
     Go( &EDIT_TOOL::ModifyLines,              PCB_ACTIONS::filletLines.MakeEvent() );
     Go( &EDIT_TOOL::ModifyLines,              PCB_ACTIONS::chamferLines.MakeEvent() );
     Go( &EDIT_TOOL::ModifyLines,              PCB_ACTIONS::dogboneCorners.MakeEvent() );

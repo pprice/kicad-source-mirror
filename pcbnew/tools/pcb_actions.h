@@ -150,6 +150,12 @@ public:
     /// Fillet (i.e. adds an arc tangent to) all selected straight tracks by a user defined radius
     static TOOL_ACTION filletTracks;
 
+    /// Turns the corners of the selected tracks into the widest arcs that keep their clearances
+    static TOOL_ACTION roundTrackCorners;
+
+    /// Turns the selected arcs into 45 degree corners
+    static TOOL_ACTION miterTrackCorners;
+
     /// Fillet (i.e. adds an arc tangent to) all selected straight lines by a user defined radius
     static TOOL_ACTION filletLines;
     /// Chamfer (i.e. adds a straight line) all selected straight lines by a user defined setback

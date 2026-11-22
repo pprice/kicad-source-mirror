@@ -1,0 +1,1134 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include "track_corners.h"
+
+#include <cmath>
+#include <map>
+#include <optional>
+#include <set>
+
+#include <board.h>
+#include <board_commit.h>
+#include <footprint.h>
+#include <pad.h>
+#include <pcb_track.h>
+#include <geometry/shape_arc.h>
+#include <router/pns_arc.h>
+#include <router/pns_kicad_iface.h>
+#include <router/pns_node.h>
+#include <router/pns_segment.h>
+
+
+namespace
+{
+
+const double PI = 3.14159265358979323846;
+
+/// What is left of a straight between two arcs: nothing, or at least this
+const double MIN_STRAIGHT = pcbIUScale.mmToIU( 0.1 );
+
+/// A straight shorter than this is none
+const double NOTHING = pcbIUScale.mmToIU( 0.001 );
+
+/// The narrowest arc worth laying; under it a corner stays sharp
+const double MIN_RADIUS = pcbIUScale.mmToIU( 0.1 );
+
+
+/// The router's board, to check new copper against, with nothing to draw on
+class CHECK_IFACE : public PNS_KICAD_IFACE
+{
+public:
+    CHECK_IFACE() { SetView( nullptr ); }
+
+    void EraseView() override {}
+    bool IsAnyLayerVisible( const PNS_LAYER_RANGE& aLayer ) const override { return true; }
+    bool IsItemVisible( const PNS::ITEM* aItem ) const override { return true; }
+    void HideItem( PNS::ITEM* aItem ) override {}
+
+    void DisplayItem( const PNS::ITEM* aItem, int aClearance, bool aEdit = false,
+                      int aFlags = 0 ) override {}
+
+    void DisplayPathLine( const SHAPE_LINE_CHAIN& aLine, int aImportance ) override {}
+    void DisplayRatline( const SHAPE_LINE_CHAIN& aRatline, PNS::NET_HANDLE aNet ) override {}
+    void Commit() override {}
+};
+
+
+/// One piece of a run, its ends in the run's order
+struct PIECE
+{
+    bool       m_arc = false;
+    VECTOR2D   m_a;
+    VECTOR2D   m_b;
+    VECTOR2D   m_mid;               ///< an arc's
+    PCB_TRACK* m_from = nullptr;    ///< the track it was, or comes from
+    bool       m_changed = false;
+
+    double Length() const { return ( m_b - m_a ).EuclideanNorm(); }
+};
+
+
+/// Tracks and arcs joined end to end, nothing else where they meet
+struct RUN
+{
+    std::vector<PCB_TRACK*> m_items;
+    std::vector<PIECE>      m_pieces;
+    std::vector<PNS::ITEM*> m_inWorld;     ///< its copper in the router's world, as it now is
+    bool                    m_changed = false;
+};
+
+
+VECTOR2D unit( const VECTOR2D& aV )
+{
+    double n = aV.EuclideanNorm();
+    return n > 0 ? aV / n : VECTOR2D( 0, 0 );
+}
+
+
+double dot( const VECTOR2D& aA, const VECTOR2D& aB )
+{
+    return aA.x * aB.x + aA.y * aB.y;
+}
+
+
+double cross( const VECTOR2D& aA, const VECTOR2D& aB )
+{
+    return aA.x * aB.y - aA.y * aB.x;
+}
+
+
+VECTOR2D rotate( const VECTOR2D& aV, double aAngle )
+{
+    double c = std::cos( aAngle );
+    double s = std::sin( aAngle );
+    return VECTOR2D( aV.x * c - aV.y * s, aV.x * s + aV.y * c );
+}
+
+
+VECTOR2I toI( const VECTOR2D& aV )
+{
+    return VECTOR2I( KiROUND( aV.x ), KiROUND( aV.y ) );
+}
+
+
+wxString where( const VECTOR2D& aAt, PCB_TRACK* aTrack )
+{
+    return wxString::Format( wxS( "at %.3f, %.3f mm on %s" ), pcbIUScale.IUTomm( aAt.x ),
+                             pcbIUScale.IUTomm( aAt.y ), aTrack->GetNetname() );
+}
+
+
+/// Says what new copper comes too near
+wxString describe( const PNS::OBSTACLE& aObstacle )
+{
+    BOARD_ITEM* hit = aObstacle.m_item->Parent();
+
+    if( !hit && aObstacle.m_item->ParentPadVia() )
+        hit = aObstacle.m_item->ParentPadVia()->Parent();
+
+    wxString what = wxString( wxS( "a " ) ) + wxString( aObstacle.m_item->KindStr() );
+
+    if( hit && hit->Type() == PCB_VIA_T )
+        what = wxS( "a via" );
+    else if( hit && hit->Type() == PCB_TRACE_T )
+        what = wxS( "a track" );
+    else if( hit && hit->Type() == PCB_ARC_T )
+        what = wxS( "an arc" );
+    else if( hit && hit->Type() == PCB_PAD_T )
+    {
+        PAD* pad = static_cast<PAD*>( hit );
+        what = wxString::Format( wxS( "%s pad %s" ), pad->GetParentFootprint()->GetReference(),
+                                 pad->GetNumber() );
+    }
+    else if( hit )
+    {
+        what = hit->GetFriendlyName();
+    }
+
+    if( BOARD_CONNECTED_ITEM* connected = dynamic_cast<BOARD_CONNECTED_ITEM*>( hit ) )
+        what << wxS( " on " ) << connected->GetNetname();
+
+    return wxS( "too near " ) + what;
+}
+
+
+/// The tangent points and middle of the arc of radius aRadius in the corner at aV between the
+/// directions aU (back along the first track) and aW (on along the second)
+struct FILLET
+{
+    VECTOR2D m_t1, m_mid, m_t2;
+    double   m_tangent = 0;
+};
+
+
+FILLET fillet( const VECTOR2D& aV, const VECTOR2D& aU, const VECTOR2D& aW, double aRadius )
+{
+    double   alpha = std::acos( std::clamp( dot( aU, aW ), -1.0, 1.0 ) );
+    VECTOR2D bisector = unit( aU + aW );
+    FILLET   f;
+
+    f.m_tangent = aRadius / std::tan( alpha / 2 );
+    f.m_t1 = aV + aU * f.m_tangent;
+    f.m_t2 = aV + aW * f.m_tangent;
+
+    VECTOR2D centre = aV + bisector * ( aRadius / std::sin( alpha / 2 ) );
+    f.m_mid = centre - bisector * aRadius;
+    return f;
+}
+
+
+/// The points round the outside of an arc, from its start S through centre C by aTheta, where
+/// straight tracks turning at 45 degrees (or in even steps near it) meet
+std::vector<VECTOR2D> miterPoints( const VECTOR2D& aC, const VECTOR2D& aS, double aTheta )
+{
+    int    k = std::max( 1, (int) std::lround( std::abs( aTheta ) / ( PI / 4 ) ) );
+    double out = 1.0 / std::cos( aTheta / ( 2.0 * k ) );
+
+    std::vector<VECTOR2D> points;
+
+    for( int j = 0; j < k; ++j )
+        points.push_back( aC + rotate( aS - aC, ( j + 0.5 ) * aTheta / k ) * out );
+
+    return points;
+}
+
+
+class CORNERS
+{
+public:
+    CORNERS( BOARD* aBoard, TRACK_CORNER_STYLE aStyle, int aMaxRadius ) :
+            m_board( aBoard ),
+            m_style( aStyle ),
+            m_maxRadius( aMaxRadius > 0 ? aMaxRadius : pcbIUScale.mmToIU( 2 ) )
+    {
+        m_iface.SetBoard( aBoard );
+        m_iface.SyncWorld( &m_world );
+
+        for( PCB_TRACK* track : aBoard->Tracks() )
+        {
+            if( track->Type() == PCB_VIA_T )
+                continue;
+
+            m_ends[ key( track->GetStart() ) ].push_back( track );
+            m_ends[ key( track->GetEnd() ) ].push_back( track );
+        }
+    }
+
+    TRACK_CORNERS_RESULT Run( const std::vector<PCB_TRACK*>& aTracks, BOARD_COMMIT& aCommit )
+    {
+        std::set<PCB_TRACK*> chosen;
+
+        for( PCB_TRACK* track : aTracks )
+        {
+            if( track->Type() == PCB_VIA_T )
+                continue;
+
+            if( track->IsLocked() )
+            {
+                m_result.m_left.push_back( wxS( "a locked track " )
+                                           + where( track->GetStart(), track ) );
+                continue;
+            }
+
+            chosen.insert( track );
+        }
+
+        std::set<PCB_TRACK*> done;
+        std::vector<RUN>     runs;
+
+        for( PCB_TRACK* track : aTracks )
+        {
+            if( !chosen.count( track ) || done.count( track ) )
+                continue;
+
+            RUN run = buildRun( track, chosen );
+            done.insert( run.m_items.begin(), run.m_items.end() );
+
+            for( PCB_TRACK* item : run.m_items )
+            {
+                if( PNS::ITEM* inWorld = m_world.FindItemByParent( item ) )
+                    run.m_inWorld.push_back( inWorld );
+            }
+
+            runs.push_back( std::move( run ) );
+        }
+
+        // Round after round, each run's new copper put into the world as it is made: where two
+        // tracks turn side by side the outer can only follow once the inner has turned
+        std::vector<wxString> locked = m_result.m_left;
+
+        for( int pass = 0; pass < 6; ++pass )
+        {
+            int before = m_result.m_changed;
+            m_result.m_left = locked;
+
+            for( RUN& run : runs )
+            {
+                int runBefore = m_result.m_changed;
+
+                if( m_style == TRACK_CORNER_STYLE::ARCS )
+                    this->round( run );
+                else
+                    miter( run );
+
+                if( m_result.m_changed > runBefore )
+                {
+                    run.m_changed = true;
+                    relay( run );
+                }
+            }
+
+            if( m_result.m_changed == before )
+                break;
+        }
+
+        for( RUN& run : runs )
+        {
+            if( run.m_changed )
+                apply( run, aCommit );
+        }
+
+        return m_result;
+    }
+
+private:
+    static std::pair<int, int> key( const VECTOR2I& aP ) { return { aP.x, aP.y }; }
+
+    /// The one other chosen track that carries a run on through aP, if nothing else is there
+    PCB_TRACK* onward( PCB_TRACK* aTrack, const VECTOR2I& aP, const std::set<PCB_TRACK*>& aChosen )
+    {
+        auto it = m_ends.find( key( aP ) );
+
+        if( it == m_ends.end() )
+            return nullptr;
+
+        PCB_TRACK* next = nullptr;
+        int        others = 0;
+
+        for( PCB_TRACK* t : it->second )
+        {
+            if( t == aTrack || t->GetLayer() != aTrack->GetLayer()
+                || t->GetNetCode() != aTrack->GetNetCode() )
+            {
+                continue;
+            }
+
+            ++others;
+            next = t;
+        }
+
+        if( others != 1 || !aChosen.count( next ) || next->GetWidth() != aTrack->GetWidth() )
+            return nullptr;
+
+        for( PCB_TRACK* t : m_board->Tracks() )
+        {
+            if( t->Type() == PCB_VIA_T && t->GetNetCode() == aTrack->GetNetCode()
+                && t->IsOnLayer( aTrack->GetLayer() ) && t->HitTest( aP ) )
+            {
+                return nullptr;
+            }
+        }
+
+        for( FOOTPRINT* fp : m_board->Footprints() )
+        {
+            for( PAD* pad : fp->Pads() )
+            {
+                if( pad->GetNetCode() == aTrack->GetNetCode() && pad->IsOnLayer( aTrack->GetLayer() )
+                    && pad->HitTest( aP, 0, aTrack->GetLayer() ) )
+                {
+                    return nullptr;
+                }
+            }
+        }
+
+        return next;
+    }
+
+    static PIECE pieceOf( PCB_TRACK* aTrack, bool aReversed )
+    {
+        PIECE p;
+        p.m_from = aTrack;
+        p.m_a = aReversed ? aTrack->GetEnd() : aTrack->GetStart();
+        p.m_b = aReversed ? aTrack->GetStart() : aTrack->GetEnd();
+
+        if( aTrack->Type() == PCB_ARC_T )
+        {
+            p.m_arc = true;
+            p.m_mid = static_cast<PCB_ARC*>( aTrack )->GetMid();
+        }
+
+        return p;
+    }
+
+    RUN buildRun( PCB_TRACK* aStart, const std::set<PCB_TRACK*>& aChosen )
+    {
+        // Back from the start's start to the run's first track, then forwards to its last
+        PCB_TRACK* first = aStart;
+        VECTOR2I   firstEnd = aStart->GetStart();
+        std::set<PCB_TRACK*> seen = { aStart };
+
+        while( PCB_TRACK* prev = onward( first, firstEnd, aChosen ) )
+        {
+            if( seen.count( prev ) )
+                break;
+
+            seen.insert( prev );
+            firstEnd = prev->GetStart() == firstEnd ? prev->GetEnd() : prev->GetStart();
+            first = prev;
+        }
+
+        RUN        run;
+        PCB_TRACK* cur = first;
+        VECTOR2I   from = firstEnd;
+        seen.clear();
+
+        while( cur && !seen.count( cur ) )
+        {
+            seen.insert( cur );
+            bool reversed = cur->GetStart() != from;
+            run.m_items.push_back( cur );
+            run.m_pieces.push_back( pieceOf( cur, reversed ) );
+
+            VECTOR2I to = reversed ? cur->GetStart() : cur->GetEnd();
+            PCB_TRACK* next = onward( cur, to, aChosen );
+            from = to;
+            cur = next;
+        }
+
+        return run;
+    }
+
+    /// Puts a run's copper into the router's world as its pieces now are
+    void relay( RUN& aRun )
+    {
+        PCB_TRACK* like = aRun.m_items.front();
+        int        layer = m_iface.GetPNSLayerFromBoardLayer( like->GetLayer() );
+
+        for( PNS::ITEM* item : aRun.m_inWorld )
+            m_world.Remove( item );
+
+        aRun.m_inWorld.clear();
+
+        for( const PIECE& piece : aRun.m_pieces )
+        {
+            if( piece.m_arc )
+            {
+                SHAPE_ARC shape( toI( piece.m_a ), toI( piece.m_mid ), toI( piece.m_b ),
+                                 like->GetWidth() );
+                auto      arc = std::make_unique<PNS::ARC>( shape, like->GetNet() );
+                arc->SetLayer( layer );
+                PNS::ITEM* added = arc.get();
+
+                if( m_world.Add( std::move( arc ), true ) )
+                    aRun.m_inWorld.push_back( added );
+            }
+            else
+            {
+                auto seg = std::make_unique<PNS::SEGMENT>( SEG( toI( piece.m_a ), toI( piece.m_b ) ),
+                                                           like->GetNet() );
+                seg->SetWidth( like->GetWidth() );
+                seg->SetLayer( layer );
+                PNS::ITEM* added = seg.get();
+
+                if( m_world.Add( std::move( seg ), true ) )
+                    aRun.m_inWorld.push_back( added );
+            }
+        }
+    }
+
+    /// Whether a point lies on a piece's copper
+    static bool onCopper( const PIECE& aPiece, const VECTOR2I& aP, int aWidth )
+    {
+        if( aPiece.m_arc )
+        {
+            SHAPE_ARC shape( toI( aPiece.m_a ), toI( aPiece.m_mid ), toI( aPiece.m_b ), aWidth );
+            return shape.Collide( aP, 0 );
+        }
+
+        return SEG( toI( aPiece.m_a ), toI( aPiece.m_b ) ).Distance( aP ) <= aWidth / 2;
+    }
+
+    /**
+     * Where other copper of the net joins some of these pieces: as KiCad joins them, a track's end
+     * or a via's centre that lies on their copper.
+     */
+    std::vector<VECTOR2I> joinsOn( const std::vector<const PIECE*>& aPieces, const RUN& aRun,
+                                   PCB_TRACK* aLike )
+    {
+        std::vector<VECTOR2I> joins;
+
+        auto consider =
+                [&]( const VECTOR2I& aP )
+                {
+                    for( const PIECE* piece : aPieces )
+                    {
+                        if( onCopper( *piece, aP, aLike->GetWidth() ) )
+                        {
+                            joins.push_back( aP );
+                            return;
+                        }
+                    }
+                };
+
+        for( PCB_TRACK* t : m_board->Tracks() )
+        {
+            if( t->GetNetCode() != aLike->GetNetCode() || !t->IsOnLayer( aLike->GetLayer() )
+                || std::find( aRun.m_items.begin(), aRun.m_items.end(), t ) != aRun.m_items.end() )
+            {
+                continue;
+            }
+
+            if( t->Type() == PCB_VIA_T )
+            {
+                consider( t->GetPosition() );
+            }
+            else
+            {
+                consider( t->GetStart() );
+                consider( t->GetEnd() );
+            }
+        }
+
+        return joins;
+    }
+
+    /// Whether every join still lies on some of the new copper
+    static bool keeps( const std::vector<VECTOR2I>& aJoins, const std::vector<PIECE>& aCopper,
+                       int aWidth )
+    {
+        for( const VECTOR2I& join : aJoins )
+        {
+            bool held = false;
+
+            for( const PIECE& piece : aCopper )
+            {
+                if( onCopper( piece, join, aWidth ) )
+                {
+                    held = true;
+                    break;
+                }
+            }
+
+            if( !held )
+                return false;
+        }
+
+        return true;
+    }
+
+    /// A piece as the router's item, on the board layer of aLike
+    std::unique_ptr<PNS::ITEM> routerItem( const PIECE& aPiece, PCB_TRACK* aLike )
+    {
+        int layer = m_iface.GetPNSLayerFromBoardLayer( aLike->GetLayer() );
+
+        if( aPiece.m_arc )
+        {
+            SHAPE_ARC shape( toI( aPiece.m_a ), toI( aPiece.m_mid ), toI( aPiece.m_b ),
+                             aLike->GetWidth() );
+            auto      arc = std::make_unique<PNS::ARC>( shape, aLike->GetNet() );
+            arc->SetLayer( layer );
+            return arc;
+        }
+
+        auto seg = std::make_unique<PNS::SEGMENT>( SEG( toI( aPiece.m_a ), toI( aPiece.m_b ) ),
+                                                   aLike->GetNet() );
+        seg->SetWidth( aLike->GetWidth() );
+        seg->SetLayer( layer );
+        return seg;
+    }
+
+    /**
+     * The gap between two shapes, edge to edge, to the nanometre: the least clearance at which
+     * they touch.  Collide's own figure is not the least for an arc, which reports the last of
+     * the points it tries.
+     */
+    static int gap( const SHAPE* aA, const SHAPE* aB )
+    {
+        int lo = 0;
+        int hi = pcbIUScale.mmToIU( 2 );
+
+        if( !aA->Collide( aB, hi ) )
+            return std::numeric_limits<int>::max();
+
+        if( aA->Collide( aB, 0 ) )
+            return 0;
+
+        while( hi - lo > 1 )
+        {
+            int mid = lo + ( hi - lo ) / 2;
+
+            if( aA->Collide( aB, mid ) )
+                hi = mid;
+            else
+                lo = mid;
+        }
+
+        return hi;
+    }
+
+    /**
+     * What new copper comes too near: other nets' copper within its clearance, as KiCad's check
+     * counts it, unless the copper it replaces (aOld) was no further from it.  A corner laid at
+     * its clearance from a neighbour keeps it when rounded or mitred, however tight.
+     */
+    std::optional<wxString> clash( const PIECE& aPiece, PCB_TRACK* aLike,
+                                   const std::vector<PIECE>& aOld = {} )
+    {
+        int                        layer = m_iface.GetPNSLayerFromBoardLayer( aLike->GetLayer() );
+        std::unique_ptr<PNS::ITEM> item = routerItem( aPiece, aLike );
+
+        // The router's own checks allow a hair under the clearance; KiCad's check does not
+        PNS::COLLISION_SEARCH_OPTIONS opts;
+        opts.m_useClearanceEpsilon = false;
+
+        PNS::NODE::OBSTACLES obstacles;
+        m_world.QueryColliding( item.get(), obstacles, opts );
+
+        std::vector<std::unique_ptr<PNS::ITEM>> old;
+
+        for( const PIECE& piece : aOld )
+            old.push_back( routerItem( piece, aLike ) );
+
+        for( const PNS::OBSTACLE& obstacle : obstacles )
+        {
+            const SHAPE* theirs = obstacle.m_item->Shape( layer );
+
+            if( !theirs || old.empty() )
+                return describe( obstacle );
+
+            int now = gap( item->Shape( layer ), theirs );
+            int before = std::numeric_limits<int>::max();
+
+            for( const std::unique_ptr<PNS::ITEM>& o : old )
+                before = std::min( before, gap( o->Shape( layer ), theirs ) );
+
+            if( now + 1 < before )
+                return describe( obstacle );
+        }
+
+        return std::nullopt;
+    }
+
+    /// Each corner between two straights becomes an arc
+    void round( RUN& aRun )
+    {
+        std::vector<PIECE>& p = aRun.m_pieces;
+        PCB_TRACK*          like = aRun.m_items.front();
+        size_t              n = p.size();
+
+        // A corner i lies between piece i and piece i + 1
+        std::vector<double> want( n, 0 );   // tangent length wanted
+        std::vector<double> alpha( n, 0 );  // the angle inside the corner
+
+        for( size_t i = 0; i + 1 < n; ++i )
+        {
+            if( p[i].m_arc || p[i + 1].m_arc || p[i].Length() == 0 || p[i + 1].Length() == 0 )
+                continue;
+
+            VECTOR2D u = unit( p[i].m_a - p[i].m_b );
+            VECTOR2D w = unit( p[i + 1].m_b - p[i + 1].m_a );
+            double   a = std::acos( std::clamp( dot( u, w ), -1.0, 1.0 ) );
+
+            // Straight on, or doubling back on itself
+            if( a > PI - 0.01 || a < 0.01 )
+                continue;
+
+            alpha[i] = a;
+            want[i] = m_maxRadius / std::tan( a / 2 );
+        }
+
+        // Each straight shared between the corners at its ends, by what they want
+        std::vector<double> t = want;
+
+        for( int pass = 0; pass < 4; ++pass )
+        {
+            for( size_t j = 0; j < n; ++j )
+            {
+                double before = j > 0 ? t[j - 1] : 0;
+                double after = j + 1 < n ? t[j] : 0;
+                double length = p[j].Length();
+                double total = before + after;
+
+                if( total <= 0 )
+                    continue;
+
+                double scale = 1.0;
+
+                if( total > length )
+                    scale = length / total;
+
+                // Nothing left between, or at least the least straight
+                double left = length - total * scale;
+
+                if( left > NOTHING && left < MIN_STRAIGHT )
+                    scale = length > MIN_STRAIGHT ? ( length - MIN_STRAIGHT ) / total : length / total;
+
+                if( scale < 1.0 )
+                {
+                    if( j > 0 )
+                        t[j - 1] *= scale;
+
+                    if( j + 1 < n )
+                        t[j] *= scale;
+                }
+            }
+        }
+
+        // The widest arc that keeps its clearances and everything joined to its tracks, sharp
+        // where there is no room
+        std::vector<FILLET> fillets( n );
+        std::vector<bool>   made( n, false );
+
+        for( size_t i = 0; i + 1 < n; ++i )
+        {
+            if( want[i] <= 0 )
+                continue;
+
+            VECTOR2D v = p[i].m_b;
+            VECTOR2D u = unit( p[i].m_a - v );
+            VECTOR2D w = unit( p[i + 1].m_b - v );
+            double   radius = t[i] * std::tan( alpha[i] / 2 );
+
+            // Each straight's far part is the other corner's to check
+            std::vector<VECTOR2I> joins = joinsOn( { &p[i], &p[i + 1] }, aRun, like );
+
+            auto fits =
+                    [&]( double aRadius, wxString* aWhy )
+                    {
+                        FILLET f = fillet( v, u, w, aRadius );
+                        PIECE  before, arc, after;
+                        before.m_a = p[i].m_a;
+                        before.m_b = f.m_t1;
+                        arc.m_arc = true;
+                        arc.m_a = f.m_t1;
+                        arc.m_mid = f.m_mid;
+                        arc.m_b = f.m_t2;
+                        after.m_a = f.m_t2;
+                        after.m_b = p[i + 1].m_b;
+
+                        if( !keeps( joins, { before, arc, after }, like->GetWidth() ) )
+                        {
+                            if( aWhy )
+                                *aWhy = wxS( "another track or a via joins its tracks there" );
+
+                            return false;
+                        }
+
+                        // The corner it takes the place of
+                        PIECE in, out;
+                        in.m_a = f.m_t1;
+                        in.m_b = v;
+                        out.m_a = v;
+                        out.m_b = f.m_t2;
+
+                        std::optional<wxString> why = clash( arc, like, { in, out } );
+
+                        if( why && aWhy )
+                            *aWhy = wxS( "an arc would come " ) + *why;
+
+                        return !why;
+                    };
+
+            wxString why;
+
+            if( radius < MIN_RADIUS )
+            {
+                m_result.m_left.push_back( wxS( "the corner " ) + where( v, like )
+                                           + wxS( ": its tracks are too short for an arc" ) );
+                continue;
+            }
+
+            if( !fits( radius, &why ) )
+            {
+                double lo = 0, hi = radius;
+
+                for( int k = 0; k < 14; ++k )
+                {
+                    double mid = ( lo + hi ) / 2;
+
+                    if( fits( mid, nullptr ) )
+                        lo = mid;
+                    else
+                        hi = mid;
+                }
+
+                if( lo < MIN_RADIUS )
+                {
+                    m_result.m_left.push_back( wxS( "the corner " ) + where( v, like ) + wxS( ": " )
+                                               + why );
+                    continue;
+                }
+
+                radius = lo;
+            }
+
+            fillets[i] = fillet( v, u, w, radius );
+            made[i] = true;
+        }
+
+        // Laid out as pieces: each straight cut back to its arcs' tangent points
+        std::vector<PIECE> out;
+
+        for( size_t j = 0; j < n; ++j )
+        {
+            PIECE s = p[j];
+
+            if( j > 0 && made[j - 1] )
+            {
+                s.m_a = fillets[j - 1].m_t2;
+                s.m_changed = true;
+            }
+
+            if( j + 1 < n && made[j] )
+            {
+                s.m_b = fillets[j].m_t1;
+                s.m_changed = true;
+            }
+
+            if( s.Length() > NOTHING || s.m_arc )
+                out.push_back( s );
+
+            if( j + 1 < n && made[j] )
+            {
+                PIECE arc;
+                arc.m_arc = true;
+                arc.m_a = fillets[j].m_t1;
+                arc.m_mid = fillets[j].m_mid;
+                arc.m_b = fillets[j].m_t2;
+                arc.m_changed = true;
+                out.push_back( arc );
+                ++m_result.m_changed;
+            }
+        }
+
+        joinUp( out );
+        p = out;
+    }
+
+    /// Each piece starts exactly where the one before ends: a straight of next to nothing taken out
+    /// between two arcs leaves their ends a hair apart
+    static void joinUp( std::vector<PIECE>& aPieces )
+    {
+        for( size_t k = 1; k < aPieces.size(); ++k )
+        {
+            if( aPieces[k].m_a != aPieces[k - 1].m_b )
+            {
+                aPieces[k].m_a = aPieces[k - 1].m_b;
+                aPieces[k].m_changed = true;
+            }
+        }
+    }
+
+    /// Each arc becomes straights round its outside, turning at 45 degrees
+    void miter( RUN& aRun )
+    {
+        std::vector<PIECE>& p = aRun.m_pieces;
+        PCB_TRACK*          like = aRun.m_items.front();
+        std::vector<PIECE>  out;
+
+        for( size_t i = 0; i < p.size(); ++i )
+        {
+            if( !p[i].m_arc )
+            {
+                out.push_back( p[i] );
+                continue;
+            }
+
+            SHAPE_ARC shape( toI( p[i].m_a ), toI( p[i].m_mid ), toI( p[i].m_b ), 0 );
+            VECTOR2D  c = shape.GetCenter();
+            VECTOR2D  s = p[i].m_a;
+            VECTOR2D  e = p[i].m_b;
+            double    half = std::atan2( cross( s - c, p[i].m_mid - c ), dot( s - c, p[i].m_mid - c ) );
+            double    theta = 2 * half;
+
+            bool straightBefore = !out.empty() && !out.back().m_arc;
+            bool straightAfter = i + 1 < p.size() && !p[i + 1].m_arc;
+
+            // What joins the arc, or the straights either side that a wider corner cuts back
+            std::vector<const PIECE*> around = { &p[i] };
+
+            if( straightBefore )
+                around.push_back( &out.back() );
+
+            if( straightAfter )
+                around.push_back( &p[i + 1] );
+
+            std::vector<VECTOR2I> joins = joinsOn( around, aRun, like );
+
+            // The arc as it is, then wider or narrower in the same corner where that comes too
+            // near something; a corner of the two straights is needed to move it
+            std::vector<double> scales = { 1.0 };
+
+            if( std::abs( theta ) < PI - 0.1 && straightBefore && straightAfter )
+                scales.insert( scales.end(), { 1.3, 1.7, 2.2, 0.7, 0.5 } );
+
+            double   r = ( s - c ).EuclideanNorm();
+            VECTOR2D corner = c + rotate( s - c, half ) / std::cos( half );
+            double   alpha = PI - std::abs( theta );
+            VECTOR2D toCentre = unit( c - corner );
+            VECTOR2D back = unit( s - corner );
+            VECTOR2D on = unit( e - corner );
+
+            std::optional<std::vector<PIECE>> chosen;
+            VECTOR2D chosenStart, chosenEnd;
+            wxString why;
+
+            for( double scale : scales )
+            {
+                VECTOR2D c2 = c, s2 = s, e2 = e;
+
+                if( scale != 1.0 )
+                {
+                    double r2 = r * scale;
+                    double tangent = r2 / std::tan( alpha / 2 );
+
+                    if( tangent > ( out.back().m_a - corner ).EuclideanNorm() - MIN_STRAIGHT
+                        || tangent > ( p[i + 1].m_b - corner ).EuclideanNorm() - MIN_STRAIGHT )
+                    {
+                        continue;
+                    }
+
+                    c2 = corner + toCentre * ( r2 / std::sin( alpha / 2 ) );
+                    s2 = corner + back * tangent;
+                    e2 = corner + on * tangent;
+                }
+
+                std::vector<VECTOR2D> points = miterPoints( c2, s2, theta );
+                std::vector<PIECE>    pieces;
+                VECTOR2D              at = s2;
+
+                points.push_back( e2 );
+
+                for( const VECTOR2D& pt : points )
+                {
+                    PIECE seg;
+                    seg.m_a = at;
+                    seg.m_b = pt;
+                    seg.m_changed = true;
+                    at = pt;
+
+                    if( seg.Length() > NOTHING )
+                        pieces.push_back( seg );
+                }
+
+                // Everything that joined the old copper still on the new
+                std::vector<PIECE> copper = pieces;
+
+                if( straightBefore )
+                {
+                    PIECE before;
+                    before.m_a = out.back().m_a;
+                    before.m_b = s2;
+                    copper.push_back( before );
+                }
+
+                if( straightAfter )
+                {
+                    PIECE after;
+                    after.m_a = e2;
+                    after.m_b = p[i + 1].m_b;
+                    copper.push_back( after );
+                }
+
+                if( !keeps( joins, copper, like->GetWidth() ) )
+                {
+                    if( why.IsEmpty() )
+                        why = wxS( "lose another track or a via that joins it" );
+
+                    continue;
+                }
+
+                bool               clear = true;
+                std::vector<PIECE> check = pieces;
+
+                // A narrower corner lengthens the straights either side towards it
+                if( scale < 1.0 )
+                {
+                    PIECE before, after;
+                    before.m_a = s;
+                    before.m_b = s2;
+                    after.m_a = e2;
+                    after.m_b = e;
+                    check.push_back( before );
+                    check.push_back( after );
+                }
+
+                // What it takes the place of: the arc and the straights either side
+                std::vector<PIECE> old = { p[i] };
+
+                for( const PIECE* piece : around )
+                    old.push_back( *piece );
+
+                for( const PIECE& seg : check )
+                {
+                    if( std::optional<wxString> hit = clash( seg, like, old ) )
+                    {
+                        if( why.IsEmpty() )
+                            why = wxS( "come " ) + *hit;
+
+                        clear = false;
+                        break;
+                    }
+                }
+
+                if( clear )
+                {
+                    chosen = pieces;
+                    chosenStart = s2;
+                    chosenEnd = e2;
+                    break;
+                }
+            }
+
+            if( !chosen )
+            {
+                m_result.m_left.push_back( wxS( "the arc " ) + where( p[i].m_mid, like )
+                                           + wxS( ": 45 degree corners would " ) + why );
+                out.push_back( p[i] );
+                continue;
+            }
+
+            if( straightBefore && out.back().m_b != chosenStart )
+            {
+                out.back().m_b = chosenStart;
+                out.back().m_changed = true;
+            }
+
+            for( const PIECE& seg : *chosen )
+                out.push_back( seg );
+
+            if( straightAfter && p[i + 1].m_a != chosenEnd )
+            {
+                p[i + 1].m_a = chosenEnd;
+                p[i + 1].m_changed = true;
+            }
+
+            ++m_result.m_changed;
+        }
+
+        // Straights that now run on in one line become one
+        std::vector<PIECE> merged;
+
+        for( const PIECE& piece : out )
+        {
+            if( !merged.empty() && !piece.m_arc && !merged.back().m_arc
+                && ( piece.m_changed || merged.back().m_changed ) )
+            {
+                PIECE&   last = merged.back();
+                VECTOR2D d1 = last.m_b - last.m_a;
+                VECTOR2D d2 = piece.m_b - piece.m_a;
+
+                if( std::abs( cross( unit( d1 ), unit( d2 ) ) ) < 1e-6 && dot( d1, d2 ) > 0 )
+                {
+                    last.m_b = piece.m_b;
+                    last.m_changed = true;
+
+                    if( !last.m_from )
+                        last.m_from = piece.m_from;
+
+                    continue;
+                }
+            }
+
+            merged.push_back( piece );
+        }
+
+        joinUp( merged );
+        p = merged;
+    }
+
+    /// Lays a changed run: a track kept as it was, a straight that comes from one moved, the rest new
+    void apply( RUN& aRun, BOARD_COMMIT& aCommit )
+    {
+        PCB_TRACK*           like = aRun.m_items.front();
+        std::set<PCB_TRACK*> used;
+
+        for( PIECE& piece : aRun.m_pieces )
+        {
+            bool fromStraight = piece.m_from && piece.m_from->Type() == PCB_TRACE_T;
+
+            if( piece.m_from && !piece.m_changed && !used.count( piece.m_from ) )
+            {
+                used.insert( piece.m_from );
+                continue;
+            }
+
+            if( !piece.m_arc && fromStraight && !used.count( piece.m_from ) )
+            {
+                used.insert( piece.m_from );
+                aCommit.Modify( piece.m_from );
+                piece.m_from->SetStart( toI( piece.m_a ) );
+                piece.m_from->SetEnd( toI( piece.m_b ) );
+                m_result.m_modified.push_back( piece.m_from );
+                continue;
+            }
+
+            PCB_TRACK* track;
+
+            if( piece.m_arc )
+            {
+                SHAPE_ARC shape( toI( piece.m_a ), toI( piece.m_mid ), toI( piece.m_b ), 0 );
+                track = new PCB_ARC( m_board, &shape );
+            }
+            else
+            {
+                track = new PCB_TRACK( m_board );
+                track->SetStart( toI( piece.m_a ) );
+                track->SetEnd( toI( piece.m_b ) );
+            }
+
+            track->SetLayer( like->GetLayer() );
+            track->SetWidth( like->GetWidth() );
+            track->SetNet( like->GetNet() );
+            track->SetHasSolderMask( like->HasSolderMask() );
+            track->SetLocalSolderMaskMargin( like->GetLocalSolderMaskMargin() );
+            aCommit.Add( track );
+            m_result.m_added.push_back( track );
+        }
+
+        for( PCB_TRACK* item : aRun.m_items )
+        {
+            if( used.count( item ) )
+                continue;
+
+            m_result.m_removed.push_back( item->m_Uuid );
+            aCommit.Remove( item );
+        }
+    }
+
+    BOARD*                                             m_board;
+    TRACK_CORNER_STYLE                                 m_style;
+    int                                                m_maxRadius;
+    CHECK_IFACE                                        m_iface;
+    PNS::NODE                                          m_world;
+    std::map<std::pair<int, int>, std::vector<PCB_TRACK*>> m_ends;
+    TRACK_CORNERS_RESULT                               m_result;
+};
+
+} // namespace
+
+
+TRACK_CORNERS_RESULT ConvertTrackCorners( BOARD* aBoard, const std::vector<PCB_TRACK*>& aTracks,
+                                          TRACK_CORNER_STYLE aStyle, int aMaxRadius,
+                                          BOARD_COMMIT& aCommit )
+{
+    CORNERS corners( aBoard, aStyle, aMaxRadius );
+    return corners.Run( aTracks, aCommit );
+}
