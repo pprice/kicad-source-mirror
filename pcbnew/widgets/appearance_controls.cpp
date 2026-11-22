@@ -454,6 +454,20 @@ APPEARANCE_CONTROLS::APPEARANCE_CONTROLS( PCB_BASE_FRAME* aParent, wxWindow* aFo
     m_windowLayers->SetScrollRate( 0, 5 );
     m_windowLayers->Bind( wxEVT_SET_FOCUS, &APPEARANCE_CONTROLS::OnSetFocus, this );
 
+    // Continuity: room between the tabs and the first layer row.
+    if( wxSizerItem* item = m_panelLayersSizer->GetItem( m_windowLayers ) )
+    {
+        item->SetFlag( item->GetFlag() | wxTOP );
+        item->SetBorder( FromDIP( 6 ) );
+    }
+
+    // Continuity: the tabs and what is under them set in from the pane's edges, under its name.
+    if( wxSizerItem* item = m_sizerOuter->GetItem( m_notebook ) )
+    {
+        item->SetFlag( wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM );
+        item->SetBorder( FromDIP( 8 ) );
+    }
+
     m_objectsOuterSizer = new wxBoxSizer( wxVERTICAL );
     m_windowObjects->SetSizer( m_objectsOuterSizer );
     m_windowObjects->SetScrollRate( 0, 5 );
@@ -658,7 +672,7 @@ void APPEARANCE_CONTROLS::createControls()
     m_inactiveLayersLabel = new wxStaticText( layerDisplayPane, wxID_ANY, msg );
     m_inactiveLayersLabel->SetFont( infoFont );
     m_inactiveLayersLabel->Wrap( -1 );
-    layerDisplayOptionsSizer->Add( m_inactiveLayersLabel, 0, wxEXPAND | wxBOTTOM, 2 );
+    layerDisplayOptionsSizer->Add( m_inactiveLayersLabel, 0, wxEXPAND | wxBOTTOM, FromDIP( 6 ) );
 
     wxBoxSizer* contrastModeSizer;
     contrastModeSizer = new wxBoxSizer( wxHORIZONTAL );
@@ -686,11 +700,11 @@ void APPEARANCE_CONTROLS::createControls()
     contrastModeSizer->Add( m_rbHighContrastOff, 0, 0, 5 );
     contrastModeSizer->AddSpacer( FromDIP( 10 ) );
 
-    layerDisplayOptionsSizer->Add( contrastModeSizer, 0, wxEXPAND | wxBOTTOM, 6 );
+    layerDisplayOptionsSizer->Add( contrastModeSizer, 0, wxEXPAND | wxBOTTOM, FromDIP( 14 ) );
 
     layerDisplayPane->SetSizer( layerDisplayOptionsSizer );
 
-    m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, 3 );
+    m_panelLayersSizer->Add( m_paneLayerDisplayOptions, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, FromDIP( 10 ) );
 
     m_paneLayerDisplayOptions->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
                                      [&]( wxCommandEvent& aEvent )
@@ -735,7 +749,7 @@ void APPEARANCE_CONTROLS::createControls()
     viewsPane->Layout();
     viewsSizer->Fit( viewsPane );
 
-    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT, 3 );
+    m_panelLayersSizer->Add( paneViews, 0, wxEXPAND | wxTOP | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 6 ) );
 
     paneViews->Bind( WX_COLLAPSIBLE_PANE_CHANGED,
                      [&]( wxCommandEvent& aEvent )
@@ -774,7 +788,7 @@ void APPEARANCE_CONTROLS::createControls()
     m_txtNetDisplayTitle->Wrap( -1 );
     m_txtNetDisplayTitle->SetToolTip( _( "Choose when to show net and netclass colors" ) );
 
-    colourSizer->Add( m_txtNetDisplayTitle, 0, wxEXPAND | wxBOTTOM, 2 );
+    colourSizer->Add( m_txtNetDisplayTitle, 0, wxEXPAND | wxBOTTOM, FromDIP( 6 ) );
 
     wxBoxSizer* netColorSizer = new wxBoxSizer( wxHORIZONTAL );
 
@@ -801,7 +815,7 @@ void APPEARANCE_CONTROLS::createControls()
     netColorSizer->Add( m_rbNetColorOff, 0, 0, 5 );
     netColorSizer->AddSpacer( FromDIP( 10 ) );
 
-    colourSizer->Add( netColorSizer, 0, wxEXPAND | wxBOTTOM, 5 );
+    colourSizer->Add( netColorSizer, 0, wxEXPAND | wxBOTTOM, FromDIP( 8 ) );
 
     layerDisplayPane->Layout();
     layerDisplayOptionsSizer->Fit( layerDisplayPane );
@@ -1803,21 +1817,24 @@ void APPEARANCE_CONTROLS::rebuildLayers()
                 label->Wrap( -1 );
                 label->SetToolTip( aSetting->tooltip );
 
-                sizer->AddSpacer( 1 );
-                sizer->Add( indicator, 0, wxALIGN_CENTER_VERTICAL | wxTOP, 2 );
-                sizer->AddSpacer( 5 );
-                sizer->Add( swatch, 0, wxALIGN_CENTER_VERTICAL | wxTOP, 2 );
-                sizer->AddSpacer( 6 );
-                sizer->Add( btn_visible, 0, wxALIGN_CENTER_VERTICAL | wxTOP, 2 );
-                sizer->AddSpacer( 5 );
-                sizer->Add( label, 1, wxALIGN_CENTER_VERTICAL | wxTOP, 2 );
+                // Continuity: rows with air between them, as the mock's list has, the marks
+                // spaced apart and the row set in from the pane's edge.
+                sizer->SetMinSize( 0, panel->FromDIP( 26 ) );
+                sizer->AddSpacer( panel->FromDIP( 6 ) );
+                sizer->Add( indicator, 0, wxALIGN_CENTER_VERTICAL );
+                sizer->AddSpacer( panel->FromDIP( 6 ) );
+                sizer->Add( swatch, 0, wxALIGN_CENTER_VERTICAL );
+                sizer->AddSpacer( panel->FromDIP( 10 ) );
+                sizer->Add( btn_visible, 0, wxALIGN_CENTER_VERTICAL );
+                sizer->AddSpacer( panel->FromDIP( 8 ) );
+                sizer->Add( label, 1, wxALIGN_CENTER_VERTICAL );
 
                 wxStaticText* note = new wxStaticText( panel, wxID_ANY, layerNote( layer, aSetting->label ),
                                                        wxDefaultPosition, wxDefaultSize, 0, wxS( "layerNote" ) );
                 note->SetForegroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
                 note->SetFont( KIUI::GetSmallInfoFont( note ) );
-                sizer->Add( note, 0, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT, 2 );
-                sizer->AddSpacer( 8 );
+                sizer->Add( note, 0, wxALIGN_CENTER_VERTICAL );
+                sizer->AddSpacer( panel->FromDIP( 12 ) );
                 note->Bind( wxEVT_LEFT_DOWN, &APPEARANCE_CONTROLS::onLayerLeftClick, this );
                 note->Bind( wxEVT_RIGHT_DOWN, &APPEARANCE_CONTROLS::rightClickHandler, this );
 
@@ -2556,10 +2573,11 @@ void APPEARANCE_CONTROLS::rebuildObjects()
                 }
 
                 aSetting->ctl_text = label;
-                m_objectsOuterSizer->Add( panel, 0, wxEXPAND | wxLEFT | wxRIGHT, 5 );
+                // Continuity: set in as the layer rows are, with air between rows.
+                m_objectsOuterSizer->Add( panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( 10 ) );
 
                 if( !aSetting->can_control_opacity )
-                    m_objectsOuterSizer->AddSpacer( 2 );
+                    m_objectsOuterSizer->AddSpacer( FromDIP( 6 ) );
             };
 
     for( const APPEARANCE_SETTING& s_setting : s_objectSettings )

@@ -74,9 +74,14 @@ void EDA_MSG_PANEL::updateFontSize()
 
 // Continuity, as the mock lays it out: a small quiet label over a large value, with room above
 // and below. In units of the control font's height.
-static constexpr double LABEL_TOP = 0.45;
-static constexpr double VALUE_TOP = 1.4;
-static constexpr double PANEL_HEIGHT = 3.2;
+static constexpr double LABEL_TOP = 0.55;
+static constexpr double VALUE_TOP = 1.55;
+static constexpr double PANEL_HEIGHT = 3.5;
+
+// Across, in widths of a "W": where the first item starts and the room between two items, the
+// hairline in the middle of it.
+static constexpr double FIRST_X = 1.4;
+static constexpr double ITEM_GAP = 3.0;
 static constexpr double LABEL_SCALE = 0.9;
 static constexpr double VALUE_SCALE = 1.3;
 
@@ -138,7 +143,7 @@ void EDA_MSG_PANEL::OnPaint( wxPaintEvent& aEvent )
 
     for( size_t i = 1; i < m_Items.size(); ++i )
     {
-        const int x = m_Items[i].m_X - m_fontSize.x;
+        const int x = m_Items[i].m_X - KiROUND( ITEM_GAP / 2 * m_fontSize.x );
         dc.DrawLine( x, top, x, bottom );
     }
 
@@ -156,7 +161,7 @@ void EDA_MSG_PANEL::updateItemPos( MSG_PANEL_ITEM& item )
     /* Don't put the first message a window client position 0.  Offset by
      * one 'W' character width. */
     if( m_last_x == 0 )
-        m_last_x = m_fontSize.x;
+        m_last_x = KiROUND( FIRST_X * m_fontSize.x );
 
     item.m_X = m_last_x;
 
@@ -177,7 +182,7 @@ void EDA_MSG_PANEL::updateItemPos( MSG_PANEL_ITEM& item )
     m_last_x += width;
 
     // Room either side of the hairline between items.
-    m_last_x += 2 * m_fontSize.x;
+    m_last_x += KiROUND( ITEM_GAP * m_fontSize.x );
 }
 
 

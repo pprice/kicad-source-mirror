@@ -165,10 +165,15 @@ wxSize WX_AUI_TOOLBAR_ART::GetToolSize( wxDC& aDc, wxWindow* aWindow,
         width += dropdownWidth + aWindow->FromDIP( 4 );
     }
 
-    // Room round each icon, so the rounded ground of a hovered or active tool has a margin.
-    const int room = aWindow->FromDIP( 4 );
+    // Room round each icon, so the rounded ground of a hovered or active tool has a margin: more
+    // across the bar than along it, where a vertical bar runs out of the editor's height.
+    const int along = aWindow->FromDIP( 6 );
+    const int across = aWindow->FromDIP( 12 );
 
-    return wxSize( width + room, height + room );
+    if( m_flags & wxAUI_TB_VERTICAL )
+        return wxSize( width + across, height + aWindow->FromDIP( 4 ) );
+
+    return wxSize( width + along, height + across );
 }
 
 
@@ -462,6 +467,49 @@ WX_AUI_DOCK_ART::WX_AUI_DOCK_ART() :
 
     // Turn off the ridiculous looking gradient
     m_gradientType = wxAUI_GRADIENT_NONE;
+
+    // Continuity, as the mock has it: a pane's name with air round it, and panes standing a little
+    // apart, the gap in the surface's colour. Both are in DIP: wx scales them for each window.
+    m_captionSize = 34;
+    m_sashSize = 6;
+}
+
+
+void WX_AUI_DOCK_ART::DrawCaption( wxDC& aDc, wxWindow* aWindow, const wxString& aText,
+                                   const wxRect& aRect, wxAuiPaneInfo& aPane )
+{
+    aDc.SetPen( *wxTRANSPARENT_PEN );
+    aDc.SetBrush( wxBrush( artFace() ) );
+    aDc.DrawRectangle( aRect );
+
+    aDc.SetFont( m_captionFont );
+    aDc.SetTextForeground( wxSystemSettings::GetColour( wxSYS_COLOUR_BTNTEXT ) );
+
+    // The pane's content is set in by the same amount (CONTINUITY_PANE_INSET in the panels).
+    const int inset = aWindow->FromDIP( 12 );
+    const int button = GetMetricForWindow( wxAUI_DOCKART_PANE_BUTTON_SIZE, aWindow );
+
+    wxRect clip = aRect;
+    clip.width -= inset + aWindow->FromDIP( 4 );
+
+    if( aPane.HasCloseButton() )
+        clip.width -= button;
+
+    if( aPane.HasPinButton() )
+        clip.width -= button;
+
+    if( aPane.HasMinimizeButton() )
+        clip.width -= button;
+
+    if( aPane.HasMaximizeButton() )
+        clip.width -= button;
+
+    wxCoord h;
+    aDc.GetTextExtent( wxT( "ABCDEFHXfgkj" ), nullptr, &h );
+
+    wxDCClipper clipper( aDc, clip );
+    aDc.DrawText( aText, aRect.x + inset,
+                  aRect.y + ( aRect.height - h ) / 2 + aWindow->FromDIP( 2 ) );
 }
 
 #if wxCHECK_VERSION( 3, 3, 0 )

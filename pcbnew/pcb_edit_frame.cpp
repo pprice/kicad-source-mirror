@@ -515,9 +515,10 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     // its display options, and the panel takes what is left.
     if( wxAuiPaneInfo& continuityPane = m_auimgr.GetPane( wxS( "Continuity" ) ); continuityPane.IsOk() )
     {
-        m_auimgr.GetPane( wxS( "LayersManager" ) ).min_size.y = FromDIP( 440 );
-        m_auimgr.GetPane( wxS( "LayersManager" ) ).dock_proportion = 3;
-        continuityPane.dock_proportion = 2;
+        // As the mock has it, about half each: the layer list scrolls, the Work view should not.
+        m_auimgr.GetPane( wxS( "LayersManager" ) ).min_size.y = FromDIP( 400 );
+        m_auimgr.GetPane( wxS( "LayersManager" ) ).dock_proportion = 1;
+        continuityPane.dock_proportion = 1;
 
         // The mock's column is Appearance over the Work view: the Selection Filter makes way,
         // and View, Panels shows it again.

@@ -66,6 +66,10 @@ class WX_AUI_DOCK_ART : public wxAuiDefaultDockArt
 {
 public:
     WX_AUI_DOCK_ART();
+
+    /// Continuity: a pane's name set in from its edge as far as its content, with room above.
+    void DrawCaption( wxDC& aDc, wxWindow* aWindow, const wxString& aText, const wxRect& aRect,
+                      wxAuiPaneInfo& aPane ) override;
 };
 
 #if wxCHECK_VERSION( 3, 3, 0 )

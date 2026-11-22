@@ -114,8 +114,10 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
         Pgm().m_PropertyGridInitialized = true;
     }
 
+    // Continuity: what is selected, quiet, set in as far as the pane's name above it.
     m_caption = new wxStaticText( this, wxID_ANY, _( "No objects selected" ) );
-    mainSizer->Add( m_caption, 0, wxALL | wxEXPAND, 5 );
+    m_caption->SetForegroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_INACTIVECAPTIONTEXT ) );
+    mainSizer->Add( m_caption, 0, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, FromDIP( 12 ) );
 
     m_grid = new PROPERTIES_PANEL_GRID( this );
     m_grid->SetUnspecifiedValueAppearance( wxPGCell( wxT( "<...>" ) ) );
@@ -144,7 +146,10 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     m_grid->DedicateKey( WXK_NUMPAD_ENTER );
     m_grid->DedicateKey( WXK_DOWN );
     m_grid->DedicateKey( WXK_UP );
-    mainSizer->Add( m_grid, 1, wxEXPAND, 5 );
+    // Room between rows, as the mock's list has: wx's widest spacing, a third of the font's height
+    // above and below each.
+    m_grid->SetVerticalSpacing( 3 );
+    mainSizer->Add( m_grid, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP( 4 ) );
 
     m_grid->SetCellDisabledTextColour( wxSystemSettings::GetColour( wxSYS_COLOUR_GRAYTEXT ) );
 

@@ -234,6 +234,29 @@ bool ACTION_TOOLBAR_PALETTE::MSWHandleMessage( WXLRESULT* aResult, WXUINT aMessa
 #endif
 
 
+/**
+ * Continuity: room round a toolbar's tools, as the mock lays them out (docs/kicad-look.md). A
+ * horizontal bar has width to spare and takes air between its tools and its groups; a vertical
+ * one keeps its tools close along its length, where the editor's height runs out first, and
+ * takes its room across.
+ */
+static void spaceToolbar( wxAuiToolBar* aBar )
+{
+    const bool vertical = aBar->GetWindowStyle() & wxAUI_TB_VERTICAL;
+
+    aBar->SetToolPacking( aBar->FromDIP( vertical ? 2 : 4 ) );
+    aBar->SetToolBorderPadding( aBar->FromDIP( 3 ) );
+
+    if( vertical )
+        aBar->SetMargins( aBar->FromDIP( 6 ), aBar->FromDIP( 6 ), aBar->FromDIP( 8 ), aBar->FromDIP( 8 ) );
+    else
+        aBar->SetMargins( aBar->FromDIP( 12 ), aBar->FromDIP( 12 ), aBar->FromDIP( 6 ), aBar->FromDIP( 6 ) );
+
+    if( wxAuiToolBarArt* art = aBar->GetArtProvider() )
+        art->SetElementSize( wxAUI_TBART_SEPARATOR_SIZE, aBar->FromDIP( vertical ? 11 : 21 ) );
+}
+
+
 ACTION_TOOLBAR::ACTION_TOOLBAR( EDA_BASE_FRAME* parent, wxWindowID id, const wxPoint& pos, const wxSize& size,
                                 long style ) :
         wxAuiToolBar( parent, id, pos, size, style ),
@@ -246,6 +269,7 @@ ACTION_TOOLBAR::ACTION_TOOLBAR( EDA_BASE_FRAME* parent, wxWindowID id, const wxP
     m_paletteTimer = new wxTimer( this );
 
     SetArtProvider( new WX_AUI_TOOLBAR_ART );
+    spaceToolbar( this );
 
     Connect( wxEVT_COMMAND_TOOL_CLICKED, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onToolEvent ), nullptr, this );
     Connect( wxEVT_AUITOOLBAR_RIGHT_CLICK, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onRightClick ), nullptr, this );
@@ -275,12 +299,7 @@ ACTION_TOOLBAR::ACTION_TOOLBAR( EDA_BASE_FRAME* parent, wxWindowID id, const wxP
 #ifdef __WXMSW__
               // Update values which are normally only initialized in wxAuiToolBar::Create.
               // FromDIP is no-op on backends other than wxMSW.
-              SetToolPacking( FromDIP( 2 ) );
-              SetToolBorderPadding( FromDIP( 3 ) );
-
-              wxSize margin_lt = FromDIP( wxSize( 5, 5 ) );
-              wxSize margin_rb = FromDIP( wxSize( 2, 2 ) );
-              SetMargins( margin_lt.x, margin_lt.y, margin_rb.x, margin_rb.y );
+              spaceToolbar( this );
 
               // Re-realize the toolbar to recalculate all item sizes with the new DPI.
               // This fixes excessive button padding when moving windows between displays
